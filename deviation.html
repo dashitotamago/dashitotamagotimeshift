@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>打刻乖離率</title>
+<style>
+  :root {
+    --bg: #F6F3EC; --ink: #22282F; --border: #DED7C6;
+    --green: #2F6F4E; --orange: #B5541E; --rose: #C1666B; --blue: #3A6EA5;
+    --muted: #7A756A; --muted2: #9A968C;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif; }
+  .disp { font-family: "Hiragino Mincho ProN", "Yu Mincho", serif; font-weight: 700; }
+  header { background: var(--ink); padding: 20px; }
+  header h1 { margin: 0; color: #F6F3EC; font-size: 20px; text-align: center; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 20px; }
+  .card { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-top: 16px; }
+  input[type=password] { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 16px; }
+  select { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 15px; }
+  .submit-btn { width: 100%; padding: 14px; margin-top: 12px; background: var(--green); color: #fff; border: none; border-radius: 6px; font-size: 16px; font-weight: 700; cursor: pointer; }
+  .month-nav { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; }
+  .month-nav button { background: none; border: none; font-size: 20px; cursor: pointer; padding: 6px 14px; border-radius: 999px; }
+  table { width: 100%; font-size: 13px; border-collapse: collapse; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+  td { padding: 8px 6px; border-bottom: 1px solid #EFEAE0; }
+  td.num, th.num { text-align: right; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+  .pill-green { background: #E4EFE8; color: var(--green); }
+  .pill-red { background: #F3E3E3; color: var(--rose); }
+  .pill-blue { background: #E3EAF3; color: var(--blue); }
+  .center-msg { text-align: center; padding: 80px 24px; color: var(--muted); }
+  .note { font-size: 12px; color: var(--muted2); margin-top: 8px; }
+  .summary-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
+  .summary-item { flex: 1; min-width: 140px; }
+  .summary-item .label { font-size: 11px; color: var(--muted); }
+  .summary-item .value { font-size: 20px; font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const CONFIG = {
+  API_URL: "https://script.google.com/macros/s/AKfycbxwfYOVj6sYN9loitbwkOX5h0bJRCzz6uoyXVVk7QWQrbjmPP__QU1H0C1Y0LpMHNV3/exec",
+  ADMIN_PASSWORD: "0310",
+  LATE_GRACE_MINUTES: 1,
+};
+const WEEKDAY_JP = ["日", "月", "火", "水", "木", "金", "土"];
+const DEFAULT_WEEKDAY_SLOTS = [{ id: "w1", label: "ワンオペ", start: "09:00", end: "18:00" }];
+const DEFAULT_WEEKEND_SLOTS = [
+  { id: "s1", label: "10:00〜15:00", start: "10:00", end: "15:00" },
+  { id: "s2", label: "11:30〜16:30", start: "11:30", end: "16:30" },
+];
+
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function monthKey(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
+function dateKey(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+function daysInMonth(year, month) {
+  const arr = [];
+  const d = new Date(year, month, 1);
+  while (d.getMonth() === month) { arr.push(new Date(d)); d.setDate(d.getDate() + 1); }
+  return arr;
+}
+function hmToMinutes(hm) { const [h, m] = String(hm).split(":").map(Number); return (h || 0) * 60 + (m || 0); }
+function slotHours(slot) { let mins = hmToMinutes(slot.end) - hmToMinutes(slot.start); if (mins < 0) mins += 24 * 60; return mins / 60; }
+function hmDiffMinutes(aIso, bIso) { return (new Date(bIso) - new Date(aIso)) / 60000; }
+
+function calcHoursForPunches(records) {
+  const sorted = [...records].sort((a, b) => new Date(a.time) - new Date(b.time));
+  const inRec = sorted.find((r) => r.type === "in");
+  const outRecs = sorted.filter((r) => r.type === "out");
+  const outRec = outRecs.length ? outRecs[outRecs.length - 1] : null;
+  if (!inRec || !outRec) return 0;
+  const grossMin = hmDiffMinutes(inRec.time, outRec.time);
+  return grossMin > 0 ? grossMin / 60 : 0;
+}
+function firstInTime(records) {
+  const sorted = [...records].filter((r) => r.type === "in").sort((a, b) => new Date(a.time) - new Date(b.time));
+  return sorted.length ? new Date(sorted[0].time) : null;
+}
+
+async function apiGet(key) {
+  try {
+    const res = await fetch(`${CONFIG.API_URL}?action=get&key=${encodeURIComponent(key)}`);
+    const data = await res.json();
+    if (!data || data.value == null || data.value === "") return null;
+    return JSON.parse(data.value);
+  } catch (e) { console.error("apiGet failed", key, e); return null; }
+}
+async function apiList(prefix) {
+  try {
+    const res = await fetch(`${CONFIG.API_URL}?action=list&prefix=${encodeURIComponent(prefix)}`);
+    const data = await res.json();
+    return (data && data.keys) || [];
+  } catch (e) { console.error("apiList failed", prefix, e); return []; }
+}
+function normalizeStaffDirectory(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => (typeof item === "string" ? { name: item } : { name: item.name }));
+}
+
+const state = {
+  cursor: (() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); })(),
+  authed: sessionStorage.getItem("payrollAuthed") === "1",
+  loading: true,
+  staffDirectory: [],
+  selectedName: "",
+  holidays: [],
+  weekdaySlots: DEFAULT_WEEKDAY_SLOTS,
+  weekendSlots: DEFAULT_WEEKEND_SLOTS,
+  confirmed: {},
+  punchByDate: {}, // dateKey -> records[]
+  rows: [], // per day for selected employee
+  lateSummary: null, // { name: { month, q, half, total } }
+  lateSummaryLoading: false,
+};
+
+function isWeekendType(d) {
+  const dow = d.getDay();
+  return dow === 0 || dow === 6 || state.holidays.includes(dateKey(d));
+}
+function slotsForDate(d) { return isWeekendType(d) ? state.weekendSlots : state.weekdaySlots; }
+
+async function loadLateSummary() {
+  state.lateSummaryLoading = true; render();
+
+  const slotsCfg = await apiGet("slotsConfig");
+  const weekdaySlots = (slotsCfg && slotsCfg.weekday && slotsCfg.weekday.length) ? slotsCfg.weekday : DEFAULT_WEEKDAY_SLOTS;
+  const weekendSlots = (slotsCfg && slotsCfg.weekend && slotsCfg.weekend.length) ? slotsCfg.weekend : DEFAULT_WEEKEND_SLOTS;
+
+  const keys = await apiList("punch:");
+  const monthCache = {}; // mKey -> { holidays, confirmed }
+  const lateEvents = []; // { name, dateStr }
+
+  for (const k of keys) {
+    const parts = k.split(":");
+    if (parts.length < 3) continue;
+    const dStr = parts[1];
+    const name = parts.slice(2).join(":");
+    const mKey = dStr.slice(0, 7);
+
+    if (!monthCache[mKey]) {
+      const cfg = await apiGet(`config:${mKey}`);
+      const conf = await apiGet(`confirmed:${mKey}`);
+      monthCache[mKey] = { holidays: (cfg && cfg.holidays) || [], confirmed: conf || {} };
+    }
+    const { holidays, confirmed } = monthCache[mKey];
+    const d = new Date(dStr + "T00:00:00");
+    const dow = d.getDay();
+    const weekend = dow === 0 || dow === 6 || holidays.includes(dStr);
+    const slots = weekend ? weekendSlots : weekdaySlots;
+    const dayConf = confirmed[dStr] || {};
+
+    let scheduledStartMin = null;
+    for (const s of slots) {
+      if (dayConf[s.id] === name) {
+        const sm = hmToMinutes(s.start);
+        if (scheduledStartMin === null || sm < scheduledStartMin) scheduledStartMin = sm;
+      }
+    }
+    if (scheduledStartMin === null) continue; // no scheduled shift, can't be "late"
+
+    const records = await apiGet(k);
+    if (!records) continue;
+    const inTime = firstInTime(records);
+    if (!inTime) continue;
+    const actualMin = inTime.getHours() * 60 + inTime.getMinutes();
+    if (actualMin - scheduledStartMin > CONFIG.LATE_GRACE_MINUTES) {
+      lateEvents.push({ name, dateStr: dStr });
+    }
+  }
+
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const q3Start = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+  const half1Start = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+
+  const summary = {};
+  for (const s of state.staffDirectory) summary[s.name] = { month: 0, q: 0, half: 0, total: 0 };
+  for (const ev of lateEvents) {
+    if (!summary[ev.name]) summary[ev.name] = { month: 0, q: 0, half: 0, total: 0 };
+    const d = new Date(ev.dateStr + "T00:00:00");
+    summary[ev.name].total++;
+    if (d >= half1Start) summary[ev.name].half++;
+    if (d >= q3Start) summary[ev.name].q++;
+    if (d >= monthStart) summary[ev.name].month++;
+  }
+
+  state.lateSummary = summary;
+  state.lateSummaryLoading = false;
+  render();
+}
+
+async function loadMonth() {
+  state.loading = true; render();
+  const mKey = monthKey(state.cursor);
+  const list = await apiGet("staffList");
+  state.staffDirectory = normalizeStaffDirectory(list);
+  if (!state.selectedName && state.staffDirectory.length) state.selectedName = state.staffDirectory[0].name;
+
+  const cfg = await apiGet(`config:${mKey}`);
+  const slotsCfg = await apiGet(`slotsConfig`);
+  const conf = await apiGet(`confirmed:${mKey}`);
+  state.holidays = (cfg && cfg.holidays) || [];
+  state.weekdaySlots = (slotsCfg && slotsCfg.weekday && slotsCfg.weekday.length) ? slotsCfg.weekday : DEFAULT_WEEKDAY_SLOTS;
+  state.weekendSlots = (slotsCfg && slotsCfg.weekend && slotsCfg.weekend.length) ? slotsCfg.weekend : DEFAULT_WEEKEND_SLOTS;
+  state.confirmed = conf || {};
+
+  const keys = await apiList(`punch:${mKey}`);
+  const punchByDate = {};
+  for (const k of keys) {
+    const parts = k.split(":");
+    if (parts.length < 3) continue;
+    const dStr = parts[1];
+    const name = parts.slice(2).join(":");
+    const records = await apiGet(k);
+    if (!records) continue;
+    punchByDate[`${dStr}|${name}`] = records;
+  }
+  state.punchByDate = punchByDate;
+
+  computeRows();
+  state.loading = false;
+  render();
+}
+
+function computeRows() {
+  if (!state.selectedName) { state.rows = []; return; }
+  const dates = daysInMonth(state.cursor.getFullYear(), state.cursor.getMonth());
+  const rows = [];
+  for (const d of dates) {
+    const dKey = dateKey(d);
+    const conf = state.confirmed[dKey] || {};
+    const slots = slotsForDate(d);
+    let scheduledHours = 0;
+    let scheduledStartMin = null;
+    for (const s of slots) {
+      if (conf[s.id] === state.selectedName) {
+        scheduledHours += slotHours(s);
+        const startMin = hmToMinutes(s.start);
+        if (scheduledStartMin === null || startMin < scheduledStartMin) scheduledStartMin = startMin;
+      }
+    }
+    const records = state.punchByDate[`${dKey}|${state.selectedName}`] || [];
+    const actualHours = records.length ? calcHoursForPunches(records) : 0;
+    const inTime = firstInTime(records);
+    let isLate = false, lateMinutes = 0;
+    if (scheduledStartMin !== null && inTime) {
+      const actualMin = inTime.getHours() * 60 + inTime.getMinutes();
+      lateMinutes = actualMin - scheduledStartMin;
+      isLate = lateMinutes > CONFIG.LATE_GRACE_MINUTES;
+    }
+    if (scheduledHours <= 0 && actualHours <= 0) continue;
+    const diff = actualHours - scheduledHours;
+    const rate = scheduledHours > 0 ? (diff / scheduledHours) * 100 : (actualHours > 0 ? 100 : 0);
+    rows.push({ date: d, dKey, scheduledHours, actualHours, diff, rate, hasSchedule: scheduledHours > 0, hasPunch: records.length > 0, isLate, lateMinutes });
+  }
+  state.rows = rows;
+}
+
+function ratePill(row) {
+  if (!row.hasSchedule) return `<span class="pill pill-blue">予定なし</span>`;
+  if (!row.hasPunch) return `<span class="pill pill-red">未打刻</span>`;
+  const r = row.rate;
+  if (Math.abs(r) <= 10) return `<span class="pill pill-green">${r >= 0 ? "+" : ""}${r.toFixed(0)}%</span>`;
+  if (r < 0) return `<span class="pill pill-red">${r.toFixed(0)}%</span>`;
+  return `<span class="pill pill-blue">+${r.toFixed(0)}%</span>`;
+}
+
+function adminLogin() {
+  const input = document.getElementById("devPasswordInput");
+  const value = input ? input.value : "";
+  if (value === CONFIG.ADMIN_PASSWORD) {
+    state.authed = true;
+    sessionStorage.setItem("payrollAuthed", "1");
+    loadMonth();
+    loadLateSummary();
+  } else {
+    const el = document.getElementById("loginFlash");
+    if (el) el.textContent = "パスワードが違います";
+  }
+}
+function changeMonth(delta) {
+  state.cursor = new Date(state.cursor.getFullYear(), state.cursor.getMonth() + delta, 1);
+  loadMonth();
+}
+function onSelectStaff(name) {
+  state.selectedName = name;
+  computeRows();
+  render();
+}
+
+function render() {
+  const root = document.getElementById("root");
+
+  if (!state.authed) {
+    root.innerHTML = `
+      <header><h1 class="disp">📊 打刻乖離率</h1></header>
+      <div class="wrap" style="max-width:360px">
+        <div class="card">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">管理者パスワード</label>
+          <input type="password" id="devPasswordInput" />
+          <button class="submit-btn" onclick="adminLogin()">入る</button>
+          <div id="loginFlash" style="font-size:12px;color:var(--orange);margin-top:8px"></div>
+        </div>
+      </div>
+    `;
+    const pw = document.getElementById("devPasswordInput");
+    if (pw) { pw.focus(); pw.addEventListener("keydown", (e) => { if (e.key === "Enter") adminLogin(); }); }
+    return;
+  }
+
+  let body;
+  if (state.loading) {
+    body = `<div class="center-msg">読み込み中…</div>`;
+  } else {
+    let options = "";
+    for (const s of state.staffDirectory) {
+      options += `<option value="${esc(s.name)}" ${state.selectedName === s.name ? "selected" : ""}>${esc(s.name)}</option>`;
+    }
+
+    let totalScheduled = 0, totalActual = 0, lateCount = 0;
+    let rowsHtml = "";
+    for (const r of state.rows) {
+      totalScheduled += r.scheduledHours;
+      totalActual += r.actualHours;
+      if (r.isLate) lateCount++;
+      const dow = r.date.getDay();
+      rowsHtml += `<tr>
+        <td>${r.date.getDate()}日(${WEEKDAY_JP[dow]})</td>
+        <td class="num">${r.hasSchedule ? r.scheduledHours.toFixed(1) + "h" : "-"}</td>
+        <td class="num">${r.hasPunch ? r.actualHours.toFixed(1) + "h" : "-"}</td>
+        <td class="num">${r.hasSchedule && r.hasPunch ? (r.diff >= 0 ? "+" : "") + r.diff.toFixed(1) + "h" : "-"}</td>
+        <td class="num">${ratePill(r)}</td>
+        <td class="num">${r.isLate ? `<span class="pill pill-red">遅刻 ${r.lateMinutes}分</span>` : ""}</td>
+      </tr>`;
+    }
+    const monthDiff = totalActual - totalScheduled;
+    const monthRate = totalScheduled > 0 ? (monthDiff / totalScheduled) * 100 : 0;
+
+    body = `
+      <div class="card">
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">従業員</label>
+        <select onchange="onSelectStaff(this.value)">${options}</select>
+      </div>
+      <div class="card">
+        <div style="font-size:13px;font-weight:700;margin-bottom:4px">今月のまとめ（${esc(state.selectedName)}）</div>
+        <div class="summary-row">
+          <div class="summary-item"><div class="label">予定合計</div><div class="value">${totalScheduled.toFixed(1)}h</div></div>
+          <div class="summary-item"><div class="label">実績合計</div><div class="value">${totalActual.toFixed(1)}h</div></div>
+          <div class="summary-item"><div class="label">乖離</div><div class="value">${monthDiff >= 0 ? "+" : ""}${monthDiff.toFixed(1)}h</div></div>
+          <div class="summary-item"><div class="label">月間乖離率</div><div class="value">${totalScheduled > 0 ? (monthRate >= 0 ? "+" : "") + monthRate.toFixed(1) + "%" : "-"}</div></div>
+          <div class="summary-item"><div class="label">遅刻回数</div><div class="value">${lateCount}回</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <table>
+          <thead><tr><th>日付</th><th class="num">予定</th><th class="num">実績</th><th class="num">差分</th><th class="num">乖離率</th><th class="num">遅刻</th></tr></thead>
+          <tbody>${rowsHtml || `<tr><td colspan="6" style="text-align:center;color:var(--muted2)">この月はデータがありません</td></tr>`}</tbody>
+        </table>
+        <p class="note">乖離率 = (実績時間 − 予定時間) ÷ 予定時間 × 100%。±10%以内は緑、実績が少ない(早退・欠勤など)は赤、実績が多い(残業など)は青。遅刻は予定の出勤時刻より${CONFIG.LATE_GRACE_MINUTES}分を超えて遅れて出勤打刻した日を数えています。</p>
+      </div>
+    `;
+  }
+
+  let lateSummaryHtml = "";
+  if (state.lateSummaryLoading) {
+    lateSummaryHtml = `<div class="card"><div style="font-size:13px;font-weight:700;margin-bottom:8px">🚨 遅刻回数（従業員別）</div><p style="font-size:13px;color:var(--muted2)">集計中…</p></div>`;
+  } else if (state.lateSummary) {
+    let rows = "";
+    for (const s of state.staffDirectory) {
+      const c = state.lateSummary[s.name] || { month: 0, q: 0, half: 0, total: 0 };
+      rows += `<tr>
+        <td>${esc(s.name)}</td>
+        <td class="num">${c.month}回</td>
+        <td class="num">${c.q}回</td>
+        <td class="num">${c.half}回</td>
+      </tr>`;
+    }
+    lateSummaryHtml = `
+      <div class="card">
+        <div style="font-size:13px;font-weight:700;margin-bottom:8px">🚨 遅刻回数（従業員別）</div>
+        <table>
+          <thead><tr><th>名前</th><th class="num">当月</th><th class="num">過去3ヶ月</th><th class="num">過去半年</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="4" style="text-align:center;color:var(--muted2)">データがありません</td></tr>`}</tbody>
+        </table>
+        <p class="note">「過去3ヶ月」「過去半年」は当月を含む直近の期間です。</p>
+      </div>
+    `;
+  }
+
+  root.innerHTML = `
+    <header><h1 class="disp">📊 打刻乖離率</h1></header>
+    <div class="wrap">
+      ${lateSummaryHtml}
+      <div class="month-nav">
+        <button onclick="changeMonth(-1)">‹</button>
+        <div class="disp" style="font-size:17px">${state.cursor.getFullYear()}年 ${state.cursor.getMonth() + 1}月</div>
+        <button onclick="changeMonth(1)">›</button>
+      </div>
+      ${body}
+    </div>
+  `;
+}
+
+window.adminLogin = adminLogin;
+window.changeMonth = changeMonth;
+window.onSelectStaff = onSelectStaff;
+
+if (state.authed) { loadMonth(); loadLateSummary(); } else render();
+</script>
+</body>
+</html>

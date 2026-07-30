@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>月次給与集計</title>
+<style>
+  :root {
+    --bg: #F6F3EC; --ink: #22282F; --border: #DED7C6;
+    --green: #2F6F4E; --orange: #B5541E; --muted: #7A756A; --muted2: #9A968C;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif; }
+  .disp { font-family: "Hiragino Mincho ProN", "Yu Mincho", serif; font-weight: 700; }
+  header { background: var(--ink); padding: 20px; }
+  header h1 { margin: 0; color: #F6F3EC; font-size: 20px; text-align: center; }
+  .wrap { max-width: 700px; margin: 0 auto; padding: 20px; }
+  .card { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-top: 16px; }
+  input[type=password] { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 16px; }
+  .submit-btn { width: 100%; padding: 14px; margin-top: 12px; background: var(--green); color: #fff; border: none; border-radius: 6px; font-size: 16px; font-weight: 700; cursor: pointer; }
+  .month-nav { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; }
+  .month-nav button { background: none; border: none; font-size: 20px; cursor: pointer; padding: 6px 14px; border-radius: 999px; }
+  table { width: 100%; font-size: 14px; border-collapse: collapse; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+  td { padding: 10px 6px; border-bottom: 1px solid #EFEAE0; }
+  td.num, th.num { text-align: right; }
+  .grand-total { font-size: 17px; font-weight: 700; margin-top: 16px; text-align: right; }
+  .center-msg { text-align: center; padding: 80px 24px; color: var(--muted); }
+  .note { font-size: 12px; color: var(--muted2); margin-top: 8px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const CONFIG = {
+  API_URL: "https://script.google.com/macros/s/AKfycbxwfYOVj6sYN9loitbwkOX5h0bJRCzz6uoyXVVk7QWQrbjmPP__QU1H0C1Y0LpMHNV3/exec",
+  ADMIN_PASSWORD: "0310",
+};
+
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function fmtYen(n) { return "¥" + Math.round(n).toLocaleString("ja-JP"); }
+function monthKey(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
+
+async function apiGet(key) {
+  try {
+    const res = await fetch(`${CONFIG.API_URL}?action=get&key=${encodeURIComponent(key)}`);
+    const data = await res.json();
+    if (!data || data.value == null || data.value === "") return null;
+    return JSON.parse(data.value);
+  } catch (e) { console.error("apiGet failed", key, e); return null; }
+}
+async function apiList(prefix) {
+  try {
+    const res = await fetch(`${CONFIG.API_URL}?action=list&prefix=${encodeURIComponent(prefix)}`);
+    const data = await res.json();
+    return (data && data.keys) || [];
+  } catch (e) { console.error("apiList failed", prefix, e); return []; }
+}
+function normalizeStaffDirectory(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) =>
+    typeof item === "string"
+      ? { name: item, wage: 0 }
+      : { name: item.name, wage: Number(item.wage) || 0 }
+  );
+}
+
+const state = {
+  cursor: (() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); })(),
+  authed: sessionStorage.getItem("payrollAuthed") === "1",
+  loading: true,
+  staffDirectory: [],
+  rows: [],
+};
+
+function hmDiffMinutes(aIso, bIso) { return (new Date(bIso) - new Date(aIso)) / 60000; }
+
+function calcHoursForPunches(records) {
+  const sorted = [...records].sort((a, b) => new Date(a.time) - new Date(b.time));
+  const inRec = sorted.find((r) => r.type === "in");
+  const outRecs = sorted.filter((r) => r.type === "out");
+  const outRec = outRecs.length ? outRecs[outRecs.length - 1] : null;
+  if (!inRec || !outRec) return 0;
+  const grossMin = hmDiffMinutes(inRec.time, outRec.time);
+  return grossMin > 0 ? grossMin / 60 : 0;
+}
+
+async function loadPayroll() {
+  state.loading = true; render();
+  const list = await apiGet("staffList");
+  state.staffDirectory = normalizeStaffDirectory(list);
+  const mKey = monthKey(state.cursor);
+  const keys = await apiList(`punch:${mKey}`);
+
+  // key format: punch:YYYY-MM-DD:name
+  const perStaff = {}; // name -> { days: Set, hours: number }
+  for (const k of keys) {
+    const parts = k.split(":");
+    if (parts.length < 3) continue;
+    const dateStr = parts[1];
+    const name = parts.slice(2).join(":");
+    const records = await apiGet(k);
+    if (!records || !records.length) continue;
+    const hours = calcHoursForPunches(records);
+    if (hours <= 0) continue;
+    if (!perStaff[name]) perStaff[name] = { days: new Set(), hours: 0 };
+    perStaff[name].days.add(dateStr);
+    perStaff[name].hours += hours;
+  }
+
+  const rows = [];
+  for (const s of state.staffDirectory) {
+    const rec = perStaff[s.name];
+    const days = rec ? rec.days.size : 0;
+    const hours = rec ? rec.hours : 0;
+    const wageCost = hours * s.wage;
+    rows.push({ name: s.name, days, hours, wageCost, total: wageCost });
+  }
+  state.rows = rows;
+  state.loading = false;
+  render();
+}
+
+function adminLogin() {
+  const input = document.getElementById("payrollPasswordInput");
+  const value = input ? input.value : "";
+  if (value === CONFIG.ADMIN_PASSWORD) {
+    state.authed = true;
+    sessionStorage.setItem("payrollAuthed", "1");
+    loadPayroll();
+  } else {
+    flashLogin("パスワードが違います");
+  }
+}
+function flashLogin(msg) {
+  const el = document.getElementById("loginFlash");
+  if (el) el.textContent = msg;
+}
+function changeMonth(delta) {
+  state.cursor = new Date(state.cursor.getFullYear(), state.cursor.getMonth() + delta, 1);
+  loadPayroll();
+}
+
+function render() {
+  const root = document.getElementById("root");
+
+  if (!state.authed) {
+    root.innerHTML = `
+      <header><h1 class="disp">💰 月次給与集計</h1></header>
+      <div class="wrap" style="max-width:360px">
+        <div class="card">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">管理者パスワード</label>
+          <input type="password" id="payrollPasswordInput" />
+          <button class="submit-btn" onclick="adminLogin()">入る</button>
+          <div id="loginFlash" style="font-size:12px;color:var(--orange);margin-top:8px"></div>
+        </div>
+      </div>
+    `;
+    const pw = document.getElementById("payrollPasswordInput");
+    if (pw) { pw.focus(); pw.addEventListener("keydown", (e) => { if (e.key === "Enter") adminLogin(); }); }
+    return;
+  }
+
+  let body;
+  if (state.loading) {
+    body = `<div class="center-msg">読み込み中…</div>`;
+  } else {
+    let rowsHtml = "";
+    let grand = 0;
+    for (const r of state.rows) {
+      grand += r.total;
+      rowsHtml += `<tr>
+        <td>${esc(r.name)}</td>
+        <td class="num">${r.days}日</td>
+        <td class="num">${r.hours.toFixed(1)}h</td>
+        <td class="num">${fmtYen(r.wageCost)}</td>
+        <td class="num" style="font-weight:700">${fmtYen(r.total)}</td>
+      </tr>`;
+    }
+    body = `
+      <div class="card">
+        <table>
+          <thead><tr>
+            <th>名前</th><th class="num">出勤日数</th><th class="num">合計時間</th>
+            <th class="num">給与</th><th class="num">振込額</th>
+          </tr></thead>
+          <tbody>${rowsHtml || `<tr><td colspan="5" style="text-align:center;color:var(--muted2)">データがありません</td></tr>`}</tbody>
+        </table>
+        <div class="grand-total">今月の支払総額：${fmtYen(grand)}</div>
+        <p class="note">打刻データ（出勤〜退勤、休憩を除く実労働時間）と、スタッフ設定の時給から自動計算しています。</p>
+      </div>
+    `;
+  }
+
+  root.innerHTML = `
+    <header><h1 class="disp">💰 月次給与集計</h1></header>
+    <div class="wrap">
+      <div class="month-nav">
+        <button onclick="changeMonth(-1)">‹</button>
+        <div class="disp" style="font-size:17px">${state.cursor.getFullYear()}年 ${state.cursor.getMonth() + 1}月</div>
+        <button onclick="changeMonth(1)">›</button>
+      </div>
+      ${body}
+    </div>
+  `;
+}
+
+window.adminLogin = adminLogin;
+window.changeMonth = changeMonth;
+
+if (state.authed) loadPayroll(); else render();
+</script>
+</body>
+</html>

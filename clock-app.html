@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>打刻</title>
+<style>
+  :root {
+    --bg: #F6F3EC; --ink: #22282F; --border: #DED7C6;
+    --green: #2F6F4E; --orange: #B5541E; --orange-bg: #FBE9D6;
+    --rose: #C1666B; --muted: #7A756A; --muted2: #9A968C;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif;
+  }
+  .disp { font-family: "Hiragino Mincho ProN", "Yu Mincho", serif; font-weight: 700; }
+  header { background: var(--ink); padding: 20px; text-align: center; }
+  header h1 { margin: 0; color: #F6F3EC; font-size: 22px; }
+  .wrap { max-width: 480px; margin: 0 auto; padding: 20px; }
+  .card { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-top: 16px; }
+  select {
+    width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 14px; font-size: 18px; background: #fff;
+  }
+  .clock-btn {
+    width: 100%; padding: 22px; margin-top: 12px; border-radius: 8px; border: none;
+    font-size: 18px; font-weight: 700; color: #fff; cursor: pointer;
+  }
+  .btn-in { background: var(--green); }
+  .btn-out { background: var(--rose); }
+  .btn-break-start { background: var(--orange); }
+  .btn-break-end { background: #8A6D3B; }
+  .clock-btn:disabled { opacity: .4; cursor: not-allowed; }
+  video, canvas { width: 100%; border-radius: 8px; background: #000; }
+  .cam-actions { display: flex; gap: 10px; margin-top: 12px; }
+  .cam-actions button { flex: 1; padding: 14px; border-radius: 6px; border: none; font-size: 16px; font-weight: 700; cursor: pointer; }
+  .btn-capture { background: var(--green); color: #fff; }
+  .btn-retake { background: #fff; border: 1px solid var(--border) !important; color: var(--muted); }
+  .btn-cancel { background: #fff; border: 1px solid var(--border) !important; color: var(--rose); }
+  .center-msg { text-align: center; padding: 80px 24px; color: var(--muted); font-size: 16px; }
+  .result { text-align: center; padding: 40px 20px; }
+  .result .big { font-size: 44px; }
+  .flash { text-align: center; font-size: 13px; color: var(--rose); margin-top: 8px; }
+  .now-clock { text-align: center; font-size: 14px; color: var(--muted); margin-top: 4px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const CONFIG = {
+  API_URL: "https://script.google.com/macros/s/AKfycbxwfYOVj6sYN9loitbwkOX5h0bJRCzz6uoyXVVk7QWQrbjmPP__QU1H0C1Y0LpMHNV3/exec",
+  IPAD_ONLY: true,
+  ADMIN_PASSWORD: "0310",
+};
+
+const PUNCH_TYPES = [
+  { id: "in", label: "出勤", cls: "btn-in", icon: "🟢" },
+  { id: "out", label: "退勤", cls: "btn-out", icon: "🔴" },
+];
+
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function dateKey(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+function timeLabel(d) { return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }
+
+function isIpad() {
+  const ua = navigator.userAgent;
+  if (/iPad/.test(ua)) return true;
+  // iPadOS 13+ reports as Mac but has touch support
+  if (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) return true;
+  return false;
+}
+
+async function apiGet(key) {
+  try {
+    const res = await fetch(`${CONFIG.API_URL}?action=get&key=${encodeURIComponent(key)}`);
+    const data = await res.json();
+    if (!data || data.value == null || data.value === "") return null;
+    return JSON.parse(data.value);
+  } catch (e) { console.error("apiGet failed", key, e); return null; }
+}
+async function apiSet(key, value) {
+  try {
+    await fetch(CONFIG.API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "set", key, value: JSON.stringify(value) }),
+    });
+    return true;
+  } catch (e) { console.error("apiSet failed", key, e); return false; }
+}
+async function apiSavePhoto(base64, filename) {
+  try {
+    const res = await fetch(CONFIG.API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "savePhoto", base64, filename }),
+    });
+    const data = await res.json();
+    return data && data.url ? data.url : null;
+  } catch (e) { console.error("apiSavePhoto failed", e); return null; }
+}
+
+const state = {
+  staffDirectory: [],
+  selectedName: "",
+  selectedType: null,
+  stream: null,
+  loading: true,
+  saving: false,
+  flash: "",
+  resultMsg: null,
+  deviceAuthorized: false,
+  deviceCheckDone: false,
+  showRegister: false,
+  registerFlash: "",
+};
+
+function flash(msg) {
+  state.flash = msg;
+  render();
+  setTimeout(() => { state.flash = ""; render(); }, 2200);
+}
+
+function normalizeStaffDirectory(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => (typeof item === "string" ? { name: item } : { name: item.name }));
+}
+
+function getLocalDeviceToken() {
+  return localStorage.getItem("clockDeviceToken");
+}
+function genToken() {
+  return "dev_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+async function checkDeviceAuthorized() {
+  const local = getLocalDeviceToken();
+  const authorized = await apiGet("authorizedDeviceToken");
+  state.deviceAuthorized = !!local && !!authorized && local === authorized;
+  state.deviceCheckDone = true;
+  render();
+}
+
+async function registerThisDevice() {
+  const input = document.getElementById("registerPasswordInput");
+  const value = input ? input.value : "";
+  if (value !== CONFIG.ADMIN_PASSWORD) {
+    state.registerFlash = "パスワードが違います";
+    render();
+    return;
+  }
+  const token = genToken();
+  localStorage.setItem("clockDeviceToken", token);
+  await apiSet("authorizedDeviceToken", token);
+  state.deviceAuthorized = true;
+  state.showRegister = false;
+  state.registerFlash = "";
+  render();
+  loadStaff();
+}
+
+async function loadStaff() {
+  state.loading = true; render();
+  const list = await apiGet("staffList");
+  state.staffDirectory = normalizeStaffDirectory(list);
+  state.loading = false;
+  render();
+}
+
+function selectType(typeId) {
+  if (!state.selectedName) { flash("従業員名を選択してください"); return; }
+  state.selectedType = typeId;
+  render();
+  startCamera();
+}
+
+async function startCamera() {
+  try {
+    state.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+    const video = document.getElementById("camVideo");
+    if (video) video.srcObject = state.stream;
+  } catch (e) {
+    flash("カメラを起動できませんでした");
+    state.selectedType = null;
+    render();
+  }
+}
+function stopCamera() {
+  if (state.stream) {
+    state.stream.getTracks().forEach((t) => t.stop());
+    state.stream = null;
+  }
+}
+function cancelCamera() {
+  stopCamera();
+  state.selectedType = null;
+  render();
+}
+
+async function capturePhoto() {
+  const video = document.getElementById("camVideo");
+  if (!video) return;
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0);
+  const base64 = canvas.toDataURL("image/jpeg", 0.8);
+  stopCamera();
+
+  state.saving = true; render();
+  const now = new Date();
+  const dKey = dateKey(now);
+  const filename = `${state.selectedName}_${dKey}_${state.selectedType}_${now.getTime()}`;
+  const photoUrl = await apiSavePhoto(base64, filename);
+
+  const punchKey = `punch:${dKey}:${state.selectedName}`;
+  const existing = (await apiGet(punchKey)) || [];
+  existing.push({ type: state.selectedType, time: now.toISOString(), photoUrl: photoUrl || "" });
+  await apiSet(punchKey, existing);
+
+  state.saving = false;
+  const typeInfo = PUNCH_TYPES.find((t) => t.id === state.selectedType);
+  state.resultMsg = `${state.selectedName}さん ${typeInfo.label} 完了（${timeLabel(now)}）`;
+  state.selectedType = null;
+  render();
+  setTimeout(() => { state.resultMsg = null; render(); }, 3000);
+}
+
+function render() {
+  const root = document.getElementById("root");
+
+  if (CONFIG.IPAD_ONLY && !isIpad()) {
+    root.innerHTML = `<div class="center-msg">
+      <div style="font-size:40px">📵</div>
+      <p style="font-weight:700;margin-top:12px">このアプリは店舗のiPadでのみご利用いただけます</p>
+    </div>`;
+    return;
+  }
+
+  if (!CONFIG.API_URL) {
+    root.innerHTML = `<div class="center-msg">API_URLが設定されていません</div>`;
+    return;
+  }
+
+  if (!state.deviceCheckDone) {
+    root.innerHTML = `<div class="center-msg">確認中…</div>`;
+    return;
+  }
+
+  if (!state.deviceAuthorized) {
+    if (state.showRegister) {
+      root.innerHTML = `
+        <header><h1 class="disp">🕐 打刻</h1></header>
+        <div class="wrap">
+          <div class="card">
+            <p style="text-align:center;font-weight:700;margin-top:0">このiPadを打刻用として登録します</p>
+            <p style="font-size:13px;color:var(--muted);text-align:center">登録すると、これまで登録されていた別の端末は使えなくなります。</p>
+            <input type="password" id="registerPasswordInput" placeholder="管理者パスワード" style="width:100%;padding:12px;border:1px solid var(--border);border-radius:6px;font-size:16px;margin-top:8px" />
+            <div class="cam-actions">
+              <button class="btn-cancel" onclick="state.showRegister=false; render();">キャンセル</button>
+              <button class="btn-capture" onclick="registerThisDevice()">この端末を登録する</button>
+            </div>
+            ${state.registerFlash ? `<p class="flash">${esc(state.registerFlash)}</p>` : ""}
+          </div>
+        </div>
+      `;
+      return;
+    }
+    root.innerHTML = `<div class="center-msg">
+      <div style="font-size:40px">🔒</div>
+      <p style="font-weight:700;margin-top:12px">このiPadは打刻用として登録されていません</p>
+      <p style="font-size:13px;margin-top:8px">店舗の指定端末以外では打刻できません。</p>
+      <button class="clock-btn btn-in" style="max-width:280px;margin:20px auto 0" onclick="state.showRegister=true; render();">この端末を登録する（管理者用）</button>
+    </div>`;
+    return;
+  }
+
+  let body;
+
+  if (state.selectedType) {
+    body = `
+      <div class="card">
+        <p style="text-align:center;font-weight:700;margin-top:0">
+          ${state.selectedName}さん — ${PUNCH_TYPES.find((t) => t.id === state.selectedType).label}
+        </p>
+        <video id="camVideo" autoplay playsinline muted></video>
+        <div class="cam-actions">
+          <button class="btn-cancel" onclick="cancelCamera()">キャンセル</button>
+          <button class="btn-capture" onclick="capturePhoto()" ${state.saving ? "disabled" : ""}>${state.saving ? "保存中…" : "📸 撮影して打刻"}</button>
+        </div>
+      </div>
+    `;
+  } else if (state.resultMsg) {
+    body = `<div class="result">
+      <div class="big">✅</div>
+      <p style="font-size:18px;font-weight:700;margin-top:12px">${esc(state.resultMsg)}</p>
+    </div>`;
+  } else if (state.loading) {
+    body = `<div class="center-msg">読み込み中…</div>`;
+  } else {
+    let options = `<option value="">従業員を選択してください</option>`;
+    for (const s of state.staffDirectory) {
+      options += `<option value="${esc(s.name)}" ${state.selectedName === s.name ? "selected" : ""}>${esc(s.name)}</option>`;
+    }
+    body = `
+      <div class="card">
+        <select id="staffSelect" onchange="onSelectStaff(this.value)">${options}</select>
+      </div>
+      <div class="card">
+        ${PUNCH_TYPES.map((t) => `<button class="clock-btn ${t.cls}" onclick="selectType('${t.id}')" ${!state.selectedName ? "disabled" : ""}>${t.icon} ${t.label}</button>`).join("")}
+      </div>
+      ${state.flash ? `<div class="flash">${esc(state.flash)}</div>` : ""}
+    `;
+  }
+
+  root.innerHTML = `
+    <header><h1 class="disp">🕐 打刻</h1></header>
+    <div class="wrap">${body}</div>
+  `;
+
+  if (state.selectedType) {
+    // camera element just got created; stream will attach once startCamera resolves
+    const video = document.getElementById("camVideo");
+    if (video && state.stream) video.srcObject = state.stream;
+  }
+}
+
+function onSelectStaff(name) {
+  state.selectedName = name;
+  render();
+}
+
+window.selectType = selectType;
+window.cancelCamera = cancelCamera;
+window.capturePhoto = capturePhoto;
+window.onSelectStaff = onSelectStaff;
+window.registerThisDevice = registerThisDevice;
+window.state = state;
+window.render = render;
+
+(async function boot() {
+  render();
+  await checkDeviceAuthorized();
+  if (state.deviceAuthorized) loadStaff();
+})();
+</script>
+</body>
+</html>

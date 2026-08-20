@@ -3,28 +3,35 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>打刻乖離率</title>
+<title>従業員管理</title>
 <style>
   :root {
     --bg: #F6F3EC; --ink: #22282F; --border: #DED7C6;
     --green: #2F6F4E; --orange: #B5541E; --rose: #C1666B; --blue: #3A6EA5;
-    --muted: #7A756A; --muted2: #9A968C;
+    --muted: #7A756A; --muted2: #9A968C; --orange-bg: #FBE9D6;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif; }
   .disp { font-family: "Hiragino Mincho ProN", "Yu Mincho", serif; font-weight: 700; }
   header { background: var(--ink); padding: 20px; }
   header h1 { margin: 0; color: #F6F3EC; font-size: 20px; text-align: center; }
-  .wrap { max-width: 760px; margin: 0 auto; padding: 20px; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 20px; }
   .card { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-top: 16px; }
-  input[type=password] { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 16px; }
+  input[type=password], input[type=text], input[type=number] { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 15px; }
   select { width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 15px; }
   .submit-btn { width: 100%; padding: 14px; margin-top: 12px; background: var(--green); color: #fff; border: none; border-radius: 6px; font-size: 16px; font-weight: 700; cursor: pointer; }
+  .save-btn { background: var(--ink); color: #fff; border: none; border-radius: 6px; padding: 10px 18px; font-size: 14px; font-weight: 700; cursor: pointer; }
+  .add-btn { background: var(--orange); color: #fff; border: none; border-radius: 4px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
+  .remove-btn { background: none; border: 1px solid var(--rose); color: var(--rose); border-radius: 4px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
+  .remove-btn-plain { background: none; border: none; color: var(--blue); text-decoration: underline; font-size: 12px; cursor: pointer; padding: 0; }
   .month-nav { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; }
   .month-nav button { background: none; border: none; font-size: 20px; cursor: pointer; padding: 6px 14px; border-radius: 999px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-top: 8px; }
+  .tab-btn { background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; padding: 10px 16px; font-size: 14px; font-weight: 500; color: var(--muted); margin-bottom: -1px; }
+  .tab-btn.active { color: var(--green); border-color: var(--green); }
   table { width: 100%; font-size: 13px; border-collapse: collapse; }
-  th { text-align: left; color: var(--muted); font-weight: 500; padding: 8px 6px; border-bottom: 1px solid var(--border); }
-  td { padding: 8px 6px; border-bottom: 1px solid #EFEAE0; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 8px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 8px 6px; border-bottom: 1px solid #EFEAE0; vertical-align: top; }
   td.num, th.num { text-align: right; }
   .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
   .pill-green { background: #E4EFE8; color: var(--green); }
@@ -33,16 +40,20 @@
   .center-msg { text-align: center; padding: 80px 24px; color: var(--muted); }
   .note { font-size: 12px; color: var(--muted2); margin-top: 8px; }
   .summary-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
-  .summary-item { flex: 1; min-width: 140px; }
+  .summary-item { flex: 1; min-width: 120px; }
   .summary-item .label { font-size: 11px; color: var(--muted); }
-  .summary-item .value { font-size: 20px; font-weight: 700; }
+  .summary-item .value { font-size: 18px; font-weight: 700; }
+  .field-label { font-size: 12px; font-weight: 500; color: var(--muted); display: block; margin-bottom: 4px; }
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .slot-editor-row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  .table-scroll { overflow-x: auto; }
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script>
 const CONFIG = {
-  API_URL: "https://script.google.com/macros/s/AKfycbxwfYOVj6sYN9loitbwkOX5h0bJRCzz6uoyXVVk7QWQrbjmPP__QU1H0C1Y0LpMHNV3/exec",
+  API_URL: "https://script.google.com/macros/s/AKfycbzOSPmWXfZTvMLiOa8bucfhU3UgJdUqxucc7NWDCq2WMRHsjHqPFRDm34F8S3og8i_b/exec",
   ADMIN_PASSWORD: "0310",
   LATE_GRACE_MINUTES: 1,
 };
@@ -65,7 +76,7 @@ function daysInMonth(year, month) {
 function hmToMinutes(hm) { const [h, m] = String(hm).split(":").map(Number); return (h || 0) * 60 + (m || 0); }
 function slotHours(slot) { let mins = hmToMinutes(slot.end) - hmToMinutes(slot.start); if (mins < 0) mins += 24 * 60; return mins / 60; }
 function hmDiffMinutes(aIso, bIso) { return (new Date(bIso) - new Date(aIso)) / 60000; }
-
+function fmtYen(n) { return "¥" + Math.round(n).toLocaleString("ja-JP"); }
 function calcHoursForPunches(records) {
   const sorted = [...records].sort((a, b) => new Date(a.time) - new Date(b.time));
   const inRec = sorted.find((r) => r.type === "in");
@@ -76,9 +87,14 @@ function calcHoursForPunches(records) {
   return grossMin > 0 ? grossMin / 60 : 0;
 }
 function firstInTime(records) {
-  const sorted = [...records].filter((r) => r.type === "in").sort((a, b) => new Date(a.time) - new Date(b.time));
+  const sorted = records.filter((r) => r.type === "in").sort((a, b) => new Date(a.time) - new Date(b.time));
   return sorted.length ? new Date(sorted[0].time) : null;
 }
+function timeFromIso(iso) {
+  const d = new Date(iso);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+function combineDateTime(dateStr, timeStr) { return new Date(`${dateStr}T${timeStr}:00`).toISOString(); }
 
 async function apiGet(key) {
   try {
@@ -88,6 +104,12 @@ async function apiGet(key) {
     return JSON.parse(data.value);
   } catch (e) { console.error("apiGet failed", key, e); return null; }
 }
+async function apiSet(key, value) {
+  try {
+    await fetch(CONFIG.API_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify({ action: "set", key, value: JSON.stringify(value) }) });
+    return true;
+  } catch (e) { console.error("apiSet failed", key, e); return false; }
+}
 async function apiList(prefix) {
   try {
     const res = await fetch(`${CONFIG.API_URL}?action=list&prefix=${encodeURIComponent(prefix)}`);
@@ -95,183 +117,80 @@ async function apiList(prefix) {
     return (data && data.keys) || [];
   } catch (e) { console.error("apiList failed", prefix, e); return []; }
 }
+async function apiListValues(prefix) {
+  // { key: parsedValue } for every key under prefix, fetched in a single request
+  try {
+    const res = await fetch(`${CONFIG.API_URL}?action=listValues&prefix=${encodeURIComponent(prefix)}`);
+    const data = await res.json();
+    const out = {};
+    for (const item of (data && data.items) || []) {
+      if (item.value == null || item.value === "") continue;
+      try { out[item.key] = JSON.parse(item.value); } catch (e) { /* skip malformed */ }
+    }
+    return out;
+  } catch (e) { console.error("apiListValues failed", prefix, e); return {}; }
+}
+async function apiAction(payload) {
+  try {
+    const res = await fetch(CONFIG.API_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(payload) });
+    return await res.json();
+  } catch (e) { console.error("apiAction failed", payload, e); return { error: String(e) }; }
+}
 function normalizeStaffDirectory(raw) {
   if (!Array.isArray(raw)) return [];
-  return raw.map((item) => (typeof item === "string" ? { name: item } : { name: item.name }));
+  return raw.map((item) =>
+    typeof item === "string"
+      ? { name: item, wage: 0, password: "" }
+      : { name: item.name, wage: Number(item.wage) || 0, password: item.password || "" }
+  );
 }
 
 const state = {
   cursor: (() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); })(),
   authed: sessionStorage.getItem("payrollAuthed") === "1",
+  adminPasswordValue: null,
+  showForgot: false,
+  forgotStep: "request",
+  forgotFlash: "",
   loading: true,
+  tab: "detail", // "detail" | "compare"
   staffDirectory: [],
   selectedName: "",
+  isNewStaff: false,
   holidays: [],
+  dateOverrides: {},
   weekdaySlots: DEFAULT_WEEKDAY_SLOTS,
   weekendSlots: DEFAULT_WEEKEND_SLOTS,
   confirmed: {},
-  punchByDate: {}, // dateKey -> records[]
-  rows: [], // per day for selected employee
-  lateSummary: null, // { name: { month, q, half, total } }
+  punchByDate: {}, // `${dateStr}|${name}` -> records[]
+  allSubmissions: {}, // name -> submission object
+  lateSummary: null, // { name: { month, q, half } }
   lateSummaryLoading: false,
+  editDate: null,
+  editRecords: [],
+  flash: "",
 };
 
-function isWeekendType(d) {
-  const dow = d.getDay();
-  return dow === 0 || dow === 6 || state.holidays.includes(dateKey(d));
+function isWeekendType(d) { const dow = d.getDay(); return dow === 0 || dow === 6 || state.holidays.includes(dateKey(d)); }
+function slotsForDate(d) {
+  const override = state.dateOverrides[dateKey(d)];
+  if (override && override.length) return override;
+  return isWeekendType(d) ? state.weekendSlots : state.weekdaySlots;
 }
-function slotsForDate(d) { return isWeekendType(d) ? state.weekendSlots : state.weekdaySlots; }
+function wageOf(name) { const s = state.staffDirectory.find((x) => x.name === name); return s ? Number(s.wage) || 0 : 0; }
 
-async function loadLateSummary() {
-  state.lateSummaryLoading = true; render();
-
-  const slotsCfg = await apiGet("slotsConfig");
-  const weekdaySlots = (slotsCfg && slotsCfg.weekday && slotsCfg.weekday.length) ? slotsCfg.weekday : DEFAULT_WEEKDAY_SLOTS;
-  const weekendSlots = (slotsCfg && slotsCfg.weekend && slotsCfg.weekend.length) ? slotsCfg.weekend : DEFAULT_WEEKEND_SLOTS;
-
-  const keys = await apiList("punch:");
-  const monthCache = {}; // mKey -> { holidays, confirmed }
-  const lateEvents = []; // { name, dateStr }
-
-  for (const k of keys) {
-    const parts = k.split(":");
-    if (parts.length < 3) continue;
-    const dStr = parts[1];
-    const name = parts.slice(2).join(":");
-    const mKey = dStr.slice(0, 7);
-
-    if (!monthCache[mKey]) {
-      const cfg = await apiGet(`config:${mKey}`);
-      const conf = await apiGet(`confirmed:${mKey}`);
-      monthCache[mKey] = { holidays: (cfg && cfg.holidays) || [], confirmed: conf || {} };
-    }
-    const { holidays, confirmed } = monthCache[mKey];
-    const d = new Date(dStr + "T00:00:00");
-    const dow = d.getDay();
-    const weekend = dow === 0 || dow === 6 || holidays.includes(dStr);
-    const slots = weekend ? weekendSlots : weekdaySlots;
-    const dayConf = confirmed[dStr] || {};
-
-    let scheduledStartMin = null;
-    for (const s of slots) {
-      if (dayConf[s.id] === name) {
-        const sm = hmToMinutes(s.start);
-        if (scheduledStartMin === null || sm < scheduledStartMin) scheduledStartMin = sm;
-      }
-    }
-    if (scheduledStartMin === null) continue; // no scheduled shift, can't be "late"
-
-    const records = await apiGet(k);
-    if (!records) continue;
-    const inTime = firstInTime(records);
-    if (!inTime) continue;
-    const actualMin = inTime.getHours() * 60 + inTime.getMinutes();
-    if (actualMin - scheduledStartMin > CONFIG.LATE_GRACE_MINUTES) {
-      lateEvents.push({ name, dateStr: dStr });
-    }
-  }
-
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const q3Start = new Date(now.getFullYear(), now.getMonth() - 2, 1);
-  const half1Start = new Date(now.getFullYear(), now.getMonth() - 5, 1);
-
-  const summary = {};
-  for (const s of state.staffDirectory) summary[s.name] = { month: 0, q: 0, half: 0, total: 0 };
-  for (const ev of lateEvents) {
-    if (!summary[ev.name]) summary[ev.name] = { month: 0, q: 0, half: 0, total: 0 };
-    const d = new Date(ev.dateStr + "T00:00:00");
-    summary[ev.name].total++;
-    if (d >= half1Start) summary[ev.name].half++;
-    if (d >= q3Start) summary[ev.name].q++;
-    if (d >= monthStart) summary[ev.name].month++;
-  }
-
-  state.lateSummary = summary;
-  state.lateSummaryLoading = false;
+function flash(msg) {
+  state.flash = msg;
   render();
+  setTimeout(() => { state.flash = ""; render(); }, 2000);
 }
 
-async function loadMonth() {
-  state.loading = true; render();
-  const mKey = monthKey(state.cursor);
-  const list = await apiGet("staffList");
-  state.staffDirectory = normalizeStaffDirectory(list);
-  if (!state.selectedName && state.staffDirectory.length) state.selectedName = state.staffDirectory[0].name;
-
-  const cfg = await apiGet(`config:${mKey}`);
-  const slotsCfg = await apiGet(`slotsConfig`);
-  const conf = await apiGet(`confirmed:${mKey}`);
-  state.holidays = (cfg && cfg.holidays) || [];
-  state.weekdaySlots = (slotsCfg && slotsCfg.weekday && slotsCfg.weekday.length) ? slotsCfg.weekday : DEFAULT_WEEKDAY_SLOTS;
-  state.weekendSlots = (slotsCfg && slotsCfg.weekend && slotsCfg.weekend.length) ? slotsCfg.weekend : DEFAULT_WEEKEND_SLOTS;
-  state.confirmed = conf || {};
-
-  const keys = await apiList(`punch:${mKey}`);
-  const punchByDate = {};
-  for (const k of keys) {
-    const parts = k.split(":");
-    if (parts.length < 3) continue;
-    const dStr = parts[1];
-    const name = parts.slice(2).join(":");
-    const records = await apiGet(k);
-    if (!records) continue;
-    punchByDate[`${dStr}|${name}`] = records;
-  }
-  state.punchByDate = punchByDate;
-
-  computeRows();
-  state.loading = false;
-  render();
-}
-
-function computeRows() {
-  if (!state.selectedName) { state.rows = []; return; }
-  const dates = daysInMonth(state.cursor.getFullYear(), state.cursor.getMonth());
-  const rows = [];
-  for (const d of dates) {
-    const dKey = dateKey(d);
-    const conf = state.confirmed[dKey] || {};
-    const slots = slotsForDate(d);
-    let scheduledHours = 0;
-    let scheduledStartMin = null;
-    for (const s of slots) {
-      if (conf[s.id] === state.selectedName) {
-        scheduledHours += slotHours(s);
-        const startMin = hmToMinutes(s.start);
-        if (scheduledStartMin === null || startMin < scheduledStartMin) scheduledStartMin = startMin;
-      }
-    }
-    const records = state.punchByDate[`${dKey}|${state.selectedName}`] || [];
-    const actualHours = records.length ? calcHoursForPunches(records) : 0;
-    const inTime = firstInTime(records);
-    let isLate = false, lateMinutes = 0;
-    if (scheduledStartMin !== null && inTime) {
-      const actualMin = inTime.getHours() * 60 + inTime.getMinutes();
-      lateMinutes = actualMin - scheduledStartMin;
-      isLate = lateMinutes > CONFIG.LATE_GRACE_MINUTES;
-    }
-    if (scheduledHours <= 0 && actualHours <= 0) continue;
-    const diff = actualHours - scheduledHours;
-    const rate = scheduledHours > 0 ? (diff / scheduledHours) * 100 : (actualHours > 0 ? 100 : 0);
-    rows.push({ date: d, dKey, scheduledHours, actualHours, diff, rate, hasSchedule: scheduledHours > 0, hasPunch: records.length > 0, isLate, lateMinutes });
-  }
-  state.rows = rows;
-}
-
-function ratePill(row) {
-  if (!row.hasSchedule) return `<span class="pill pill-blue">予定なし</span>`;
-  if (!row.hasPunch) return `<span class="pill pill-red">未打刻</span>`;
-  const r = row.rate;
-  if (Math.abs(r) <= 10) return `<span class="pill pill-green">${r >= 0 ? "+" : ""}${r.toFixed(0)}%</span>`;
-  if (r < 0) return `<span class="pill pill-red">${r.toFixed(0)}%</span>`;
-  return `<span class="pill pill-blue">+${r.toFixed(0)}%</span>`;
-}
+function effectiveAdminPassword() { return state.adminPasswordValue != null ? state.adminPasswordValue : CONFIG.ADMIN_PASSWORD; }
 
 function adminLogin() {
   const input = document.getElementById("devPasswordInput");
   const value = input ? input.value : "";
-  if (value === CONFIG.ADMIN_PASSWORD) {
+  if (value === effectiveAdminPassword()) {
     state.authed = true;
     sessionStorage.setItem("payrollAuthed", "1");
     loadMonth();
@@ -281,28 +200,467 @@ function adminLogin() {
     if (el) el.textContent = "パスワードが違います";
   }
 }
+function showForgot() { state.showForgot = true; state.forgotStep = "request"; state.forgotFlash = ""; render(); }
+function backToLogin() { state.showForgot = false; state.forgotFlash = ""; render(); }
+async function requestResetCode() {
+  await apiAction({ action: "sendResetCode" });
+  state.forgotStep = "verify";
+  state.forgotFlash = "登録済みのメールアドレス宛にコードを送信しました";
+  render();
+}
+async function submitResetCode() {
+  const code = document.getElementById("resetCodeInput").value.trim();
+  const pw1 = document.getElementById("resetNewPassword").value;
+  const pw2 = document.getElementById("resetNewPassword2").value;
+  if (!pw1 || pw1 !== pw2) { state.forgotFlash = "新しいパスワードが一致しません"; render(); return; }
+  const result = await apiAction({ action: "resetAdminPassword", code, newPassword: pw1 });
+  if (result && result.ok) {
+    state.adminPasswordValue = pw1;
+    state.showForgot = false;
+    render();
+  } else {
+    const map = { bad_code: "コードが正しくありません", expired: "コードの有効期限が切れています", no_code: "先にコードを送信してください" };
+    state.forgotFlash = (result && map[result.error]) || "再設定に失敗しました";
+    render();
+  }
+}
+
 function changeMonth(delta) {
   state.cursor = new Date(state.cursor.getFullYear(), state.cursor.getMonth() + delta, 1);
   loadMonth();
 }
-function onSelectStaff(name) {
-  state.selectedName = name;
-  computeRows();
+function setTab(t) { state.tab = t; render(); }
+
+async function loadMonth() {
+  state.loading = true; render();
+  const mKey = monthKey(state.cursor);
+  const list = await apiGet("staffList");
+  state.staffDirectory = normalizeStaffDirectory(list);
+  if (!state.selectedName && state.staffDirectory.length) state.selectedName = state.staffDirectory[0].name;
+
+  const [cfg, slotsCfg, conf] = await Promise.all([
+    apiGet(`config:${mKey}`),
+    apiGet(`slotsConfig`),
+    apiGet(`confirmed:${mKey}`),
+  ]);
+  state.holidays = (cfg && cfg.holidays) || [];
+  state.dateOverrides = (cfg && cfg.dateOverrides) || {};
+  const snap = cfg && cfg.slotsSnapshot;
+  state.weekdaySlots = (snap && snap.weekday && snap.weekday.length) ? snap.weekday : ((slotsCfg && slotsCfg.weekday && slotsCfg.weekday.length) ? slotsCfg.weekday : DEFAULT_WEEKDAY_SLOTS);
+  state.weekendSlots = (snap && snap.weekend && snap.weekend.length) ? snap.weekend : ((slotsCfg && slotsCfg.weekend && slotsCfg.weekend.length) ? slotsCfg.weekend : DEFAULT_WEEKEND_SLOTS);
+  state.confirmed = conf || {};
+
+  const punchValues = await apiListValues(`punch:${mKey}`);
+  const punchByDate = {};
+  for (const key in punchValues) {
+    const parts = key.split(":");
+    if (parts.length < 3) continue;
+    const dStr = parts[1];
+    const name = parts.slice(2).join(":");
+    punchByDate[`${dStr}|${name}`] = punchValues[key];
+  }
+  state.punchByDate = punchByDate;
+
+  const subValues = await apiListValues(`submission:${mKey}:`);
+  const subs = {};
+  for (const key in subValues) {
+    const name = key.split(":").slice(2).join(":");
+    subs[name] = subValues[key];
+  }
+  state.allSubmissions = subs;
+
+  state.loading = false;
   render();
+}
+
+async function loadLateSummary() {
+  state.lateSummaryLoading = true; render();
+  const slotsCfg = await apiGet("slotsConfig");
+  const weekdaySlots = (slotsCfg && slotsCfg.weekday && slotsCfg.weekday.length) ? slotsCfg.weekday : DEFAULT_WEEKDAY_SLOTS;
+  const weekendSlots = (slotsCfg && slotsCfg.weekend && slotsCfg.weekend.length) ? slotsCfg.weekend : DEFAULT_WEEKEND_SLOTS;
+
+  const punchValues = await apiListValues("punch:");
+  const now0 = new Date();
+  const cutoffMonth = new Date(now0.getFullYear(), now0.getMonth() - 5, 1);
+  const cutoffKey = monthKey(cutoffMonth);
+  const parsed = Object.keys(punchValues).map((k) => {
+    const parts = k.split(":");
+    if (parts.length < 3) return null;
+    return { key: k, dStr: parts[1], name: parts.slice(2).join(":"), mKey: parts[1].slice(0, 7), records: punchValues[k] };
+  }).filter((p) => p && p.mKey >= cutoffKey);
+
+  const months = [...new Set(parsed.map((p) => p.mKey))];
+  const monthCache = {};
+  await Promise.all(months.map(async (mKey) => {
+    const [cfg, conf] = await Promise.all([apiGet(`config:${mKey}`), apiGet(`confirmed:${mKey}`)]);
+    monthCache[mKey] = { holidays: (cfg && cfg.holidays) || [], dateOverrides: (cfg && cfg.dateOverrides) || {}, slotsSnapshot: (cfg && cfg.slotsSnapshot) || null, confirmed: conf || {} };
+  }));
+
+  function slotsFor(p) {
+    const { holidays, dateOverrides, slotsSnapshot } = monthCache[p.mKey];
+    const override = dateOverrides[p.dStr];
+    if (override && override.length) return override;
+    const d = new Date(p.dStr + "T00:00:00");
+    const dow = d.getDay();
+    const weekend = dow === 0 || dow === 6 || holidays.includes(p.dStr);
+    if (slotsSnapshot) {
+      const snapSlots = weekend ? slotsSnapshot.weekend : slotsSnapshot.weekday;
+      if (snapSlots && snapSlots.length) return snapSlots;
+    }
+    return weekend ? weekendSlots : weekdaySlots;
+  }
+
+  const candidates = parsed.filter((p) => {
+    const { confirmed } = monthCache[p.mKey];
+    const slots = slotsFor(p);
+    const dayConf = confirmed[p.dStr] || {};
+    return slots.some((s) => dayConf[s.id] === p.name);
+  });
+
+  const lateEvents = [];
+  const attendanceEvents = [];
+  for (const p of candidates) {
+    const { confirmed } = monthCache[p.mKey];
+    const slots = slotsFor(p);
+    const dayConf = confirmed[p.dStr] || {};
+    let scheduledStartMin = null;
+    for (const s of slots) {
+      if (dayConf[s.id] === p.name) {
+        const sm = hmToMinutes(s.start);
+        if (scheduledStartMin === null || sm < scheduledStartMin) scheduledStartMin = sm;
+      }
+    }
+    const records = p.records;
+    if (!records) continue;
+    const inTime = firstInTime(records);
+    if (!inTime) continue;
+    attendanceEvents.push({ name: p.name, dateStr: p.dStr });
+    const actualMin = inTime.getHours() * 60 + inTime.getMinutes();
+    if (actualMin - scheduledStartMin > CONFIG.LATE_GRACE_MINUTES) lateEvents.push({ name: p.name, dateStr: p.dStr });
+  }
+
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const q3Start = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+  const half1Start = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+  const summary = {};
+  for (const s of state.staffDirectory) summary[s.name] = { month: 0, q: 0, half: 0, attMonth: 0, attQ: 0, attHalf: 0 };
+  for (const ev of attendanceEvents) {
+    if (!summary[ev.name]) summary[ev.name] = { month: 0, q: 0, half: 0, attMonth: 0, attQ: 0, attHalf: 0 };
+    const d = new Date(ev.dateStr + "T00:00:00");
+    if (d >= half1Start) summary[ev.name].attHalf++;
+    if (d >= q3Start) summary[ev.name].attQ++;
+    if (d >= monthStart) summary[ev.name].attMonth++;
+  }
+  for (const ev of lateEvents) {
+    if (!summary[ev.name]) summary[ev.name] = { month: 0, q: 0, half: 0, attMonth: 0, attQ: 0, attHalf: 0 };
+    const d = new Date(ev.dateStr + "T00:00:00");
+    if (d >= half1Start) summary[ev.name].half++;
+    if (d >= q3Start) summary[ev.name].q++;
+    if (d >= monthStart) summary[ev.name].month++;
+  }
+  state.lateSummary = summary;
+  state.lateSummaryLoading = false;
+  render();
+}
+
+function computeMonthStatsForStaff(name) {
+  const dates = daysInMonth(state.cursor.getFullYear(), state.cursor.getMonth());
+  let scheduledHours = 0, actualHours = 0, submissionCount = 0;
+  const sub = state.allSubmissions[name] || {};
+  for (const d of dates) {
+    const dKey = dateKey(d);
+    const conf = state.confirmed[dKey] || {};
+    const slots = slotsForDate(d);
+    const requestedSlots = (sub[dKey] && sub[dKey].slots) || [];
+    for (const s of slots) {
+      const isConfirmed = conf[s.id] === name;
+      const isRequested = requestedSlots.includes(s.id);
+      if (isConfirmed) scheduledHours += slotHours(s);
+      if (isConfirmed || isRequested) submissionCount++; // 希望していなくてもシフトインしていればカウント
+    }
+    const records = state.punchByDate[`${dKey}|${name}`];
+    if (records && records.length) actualHours += calcHoursForPunches(records);
+  }
+  const diff = actualHours - scheduledHours;
+  const rate = scheduledHours > 0 ? (diff / scheduledHours) * 100 : (actualHours > 0 ? 100 : 0);
+  return { scheduledHours, actualHours, diff, rate, submissionCount };
+}
+
+// ---- staff account management ----
+function selectStaff(name) {
+  if (name === "__new__") { state.isNewStaff = true; state.selectedName = ""; }
+  else { state.isNewStaff = false; state.selectedName = name; }
+  render();
+}
+async function saveStaffAccount() {
+  const nameInput = document.getElementById("staffNameField").value.trim();
+  const pwInput = document.getElementById("staffPasswordField").value;
+  const wageInput = Number(document.getElementById("staffWageField").value) || 0;
+  if (!nameInput) { flash("名前を入力してください"); return; }
+
+  const existingIdx = state.staffDirectory.findIndex((s) => s.name === (state.isNewStaff ? nameInput : state.selectedName));
+  let newDirectory;
+  if (existingIdx === -1) {
+    newDirectory = [...state.staffDirectory, { name: nameInput, password: pwInput, wage: wageInput }];
+  } else {
+    newDirectory = state.staffDirectory.map((s, i) => (i === existingIdx ? { name: nameInput, password: pwInput, wage: wageInput } : s));
+  }
+  state.saving = true; render();
+  await apiSet("staffList", newDirectory);
+  state.staffDirectory = newDirectory;
+  state.isNewStaff = false;
+  state.selectedName = nameInput;
+  state.saving = false;
+  flash("スタッフ情報を保存しました");
+}
+async function deleteStaffAccount() {
+  const newDirectory = state.staffDirectory.filter((s) => s.name !== state.selectedName);
+  state.saving = true; render();
+  await apiSet("staffList", newDirectory);
+  state.staffDirectory = newDirectory;
+  state.selectedName = newDirectory.length ? newDirectory[0].name : "";
+  state.saving = false;
+  flash("スタッフを削除しました");
+}
+
+// ---- punch correction ----
+function openEditPunch(dKey) {
+  const existing = state.punchByDate[`${dKey}|${state.selectedName}`] || [];
+  state.editDate = dKey;
+  state.editRecords = existing.map((r) => ({ type: r.type, time: r.time })).sort((a, b) => new Date(a.time) - new Date(b.time));
+  render();
+}
+function closeEditPunch() { state.editDate = null; state.editRecords = []; render(); }
+function editRecordTypeChange(index, value) { state.editRecords[index].type = value; }
+function editRecordTimeChange(index, value) { state.editRecords[index].time = combineDateTime(state.editDate, value); }
+function removeEditRecord(index) { state.editRecords.splice(index, 1); render(); }
+function addEditRecord() { state.editRecords.push({ type: "in", time: combineDateTime(state.editDate, "09:00") }); render(); }
+async function saveEditPunch() {
+  const sorted = [...state.editRecords].sort((a, b) => new Date(a.time) - new Date(b.time));
+  const key = `punch:${state.editDate}:${state.selectedName}`;
+  state.saving = true; render();
+  await apiSet(key, sorted);
+  state.punchByDate[`${state.editDate}|${state.selectedName}`] = sorted;
+  state.saving = false;
+  state.editDate = null;
+  state.editRecords = [];
+  render();
+}
+
+// ---- rendering ----
+function lateRate(lateCount, attCount) {
+  if (!attCount) return "-";
+  return `${((lateCount / attCount) * 100).toFixed(0)}%`;
+}
+
+function dateLabelHtml(d, weekend) {
+  const dow = d.getDay();
+  const color = dow === 0 ? "var(--rose)" : dow === 6 ? "var(--green)" : "var(--ink)";
+  return `<span style="color:${color};font-weight:700">${d.getDate()}日(${WEEKDAY_JP[dow]})</span>${weekend ? ` <span class="pill pill-blue" style="font-size:10px">土日祝</span>` : ""}`;
+}
+function ratePill(rate, hasSchedule, hasPunch) {
+  if (!hasSchedule) return `<span class="pill pill-blue">予定なし</span>`;
+  if (!hasPunch) return `<span class="pill pill-red">未打刻</span>`;
+  if (Math.abs(rate) <= 10) return `<span class="pill pill-green">${rate >= 0 ? "+" : ""}${rate.toFixed(0)}%</span>`;
+  if (rate < 0) return `<span class="pill pill-red">${rate.toFixed(0)}%</span>`;
+  return `<span class="pill pill-blue">+${rate.toFixed(0)}%</span>`;
+}
+
+function renderStaffAccountForm() {
+  const s = state.isNewStaff ? { name: "", password: "", wage: 0 } : (state.staffDirectory.find((x) => x.name === state.selectedName) || { name: "", password: "", wage: 0 });
+  return `
+    <div class="card">
+      <div style="font-size:14px;font-weight:700;margin-bottom:4px">👤 ${state.isNewStaff ? "新しいスタッフを追加" : "アカウント設定"}</div>
+      <p class="note" style="margin-top:0">名前がログインIDになります。</p>
+      <label class="field-label">名前(ログインID)</label>
+      <input type="text" id="staffNameField" value="${esc(s.name)}" placeholder="山田 太郎" />
+      <div class="field-row">
+        <div>
+          <label class="field-label">パスワード</label>
+          <input type="text" id="staffPasswordField" value="${esc(s.password)}" placeholder="パスワード" />
+        </div>
+        <div>
+          <label class="field-label">時給(円)</label>
+          <input type="number" id="staffWageField" value="${s.wage}" min="0" step="10" />
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="save-btn" style="flex:1" onclick="saveStaffAccount()">💾 保存</button>
+        ${!state.isNewStaff && state.selectedName ? `<button class="remove-btn" onclick="deleteStaffAccount()">削除</button>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function renderDetailTab() {
+  let options = `<option value="__new__" ${state.isNewStaff ? "selected" : ""}>＋ 新しいスタッフを追加</option>`;
+  for (const s of state.staffDirectory) options += `<option value="${esc(s.name)}" ${!state.isNewStaff && state.selectedName === s.name ? "selected" : ""}>${esc(s.name)}</option>`;
+
+  let html = `
+    <div class="card">
+      <label class="field-label">スタッフを選択</label>
+      <select onchange="selectStaff(this.value)">${options}</select>
+    </div>
+    ${renderStaffAccountForm()}
+  `;
+
+  if (!state.isNewStaff && state.selectedName) {
+    const stats = computeMonthStatsForStaff(state.selectedName);
+    const late = (state.lateSummary && state.lateSummary[state.selectedName]) || { month: 0, q: 0, half: 0, attMonth: 0, attQ: 0, attHalf: 0 };
+    html += `
+      <div class="card">
+        <div style="font-size:14px;font-weight:700;margin-bottom:8px">📊 ${state.cursor.getFullYear()}年${state.cursor.getMonth() + 1}月のまとめ</div>
+        <div class="summary-row">
+          <div class="summary-item"><div class="label">希望・シフトイン回数</div><div class="value">${stats.submissionCount}枠</div></div>
+          <div class="summary-item"><div class="label">予定時間</div><div class="value">${stats.scheduledHours.toFixed(1)}h</div></div>
+          <div class="summary-item"><div class="label">実績時間</div><div class="value">${stats.actualHours.toFixed(1)}h</div></div>
+          <div class="summary-item"><div class="label">乖離率</div><div class="value">${stats.scheduledHours > 0 ? (stats.rate >= 0 ? "+" : "") + stats.rate.toFixed(0) + "%" : "-"}</div></div>
+        </div>
+        <div class="summary-row">
+          <div class="summary-item"><div class="label">遅刻(当月)</div><div class="value">${late.month}回 <span style="font-size:12px;color:var(--muted)">(${lateRate(late.month, late.attMonth)})</span></div></div>
+          <div class="summary-item"><div class="label">遅刻(過去3ヶ月)</div><div class="value">${late.q}回 <span style="font-size:12px;color:var(--muted)">(${lateRate(late.q, late.attQ)})</span></div></div>
+          <div class="summary-item"><div class="label">遅刻(過去半年)</div><div class="value">${late.half}回 <span style="font-size:12px;color:var(--muted)">(${lateRate(late.half, late.attHalf)})</span></div></div>
+        </div>
+        ${state.lateSummaryLoading ? `<p class="note">遅刻回数を集計中…</p>` : ""}
+      </div>
+    `;
+
+    html += renderDailyTable(state.selectedName);
+  }
+
+  return html;
+}
+
+function renderDailyTable(name) {
+  const dates = daysInMonth(state.cursor.getFullYear(), state.cursor.getMonth());
+  let rows = "";
+  for (const d of dates) {
+    const dKey = dateKey(d);
+    const weekend = isWeekendType(d);
+    const conf = state.confirmed[dKey] || {};
+    const slots = slotsForDate(d);
+    let scheduledHours = 0;
+    for (const s of slots) { if (conf[s.id] === name) scheduledHours += slotHours(s); }
+    const records = state.punchByDate[`${dKey}|${name}`] || [];
+    const actualHours = records.length ? calcHoursForPunches(records) : 0;
+    const diff = actualHours - scheduledHours;
+    const rate = scheduledHours > 0 ? (diff / scheduledHours) * 100 : (actualHours > 0 ? 100 : 0);
+
+    rows += `<tr>
+      <td>${dateLabelHtml(d, weekend)}</td>
+      <td class="num">${scheduledHours > 0 ? scheduledHours.toFixed(1) + "h" : "-"}</td>
+      <td class="num">${actualHours > 0 ? actualHours.toFixed(1) + "h" : "-"}</td>
+      <td class="num">${scheduledHours > 0 && actualHours > 0 ? (diff >= 0 ? "+" : "") + diff.toFixed(1) + "h" : "-"}</td>
+      <td class="num">${ratePill(rate, scheduledHours > 0, actualHours > 0)}</td>
+      <td class="num"><button class="remove-btn-plain" onclick="openEditPunch('${dKey}')">修正</button></td>
+    </tr>`;
+    if (state.editDate === dKey) {
+      let recRows = "";
+      state.editRecords.forEach((rec, i) => {
+        recRows += `<div class="slot-editor-row">
+          <select onchange="editRecordTypeChange(${i}, this.value)" style="flex:1">
+            <option value="in" ${rec.type === "in" ? "selected" : ""}>出勤</option>
+            <option value="out" ${rec.type === "out" ? "selected" : ""}>退勤</option>
+          </select>
+          <input type="time" value="${timeFromIso(rec.time)}" onchange="editRecordTimeChange(${i}, this.value)" style="width:110px" />
+          <button class="remove-btn" onclick="removeEditRecord(${i})">削除</button>
+        </div>`;
+      });
+      rows += `<tr><td colspan="6">
+        <div class="card" style="background:#FBF8F2;margin:8px 0">
+          <div style="font-size:13px;font-weight:700;margin-bottom:4px">🛠 打刻を修正</div>
+          ${recRows || `<p class="note">打刻記録がありません</p>`}
+          <button class="add-btn" onclick="addEditRecord()">＋ 打刻を追加</button>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="submit-btn" style="margin-top:0;flex:1" onclick="saveEditPunch()">保存する</button>
+            <button class="remove-btn" onclick="closeEditPunch()">キャンセル</button>
+          </div>
+        </div>
+      </td></tr>`;
+    }
+  }
+  return `<div class="card">
+    <div style="font-size:14px;font-weight:700;margin-bottom:8px">🗓 日別の記録</div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>日付</th><th class="num">予定</th><th class="num">実績</th><th class="num">差分</th><th class="num">乖離率</th><th class="num">修正</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="6" style="text-align:center;color:var(--muted2)">この月はデータがありません</td></tr>`}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function renderCompareTab() {
+  let rows = "";
+  for (const s of state.staffDirectory) {
+    const stats = computeMonthStatsForStaff(s.name);
+    const late = (state.lateSummary && state.lateSummary[s.name]) || { month: 0, q: 0, half: 0, attMonth: 0, attQ: 0, attHalf: 0 };
+    rows += `<tr>
+      <td>${esc(s.name)}</td>
+      <td class="num">${fmtYen(s.wage)}</td>
+      <td class="num">${stats.submissionCount}枠</td>
+      <td class="num">${stats.scheduledHours.toFixed(1)}h</td>
+      <td class="num">${stats.actualHours.toFixed(1)}h</td>
+      <td class="num">${stats.scheduledHours > 0 ? (stats.rate >= 0 ? "+" : "") + stats.rate.toFixed(0) + "%" : "-"}</td>
+      <td class="num">${late.month}回（${lateRate(late.month, late.attMonth)}）</td>
+      <td class="num">${late.q}回（${lateRate(late.q, late.attQ)}）</td>
+      <td class="num">${late.half}回（${lateRate(late.half, late.attHalf)}）</td>
+    </tr>`;
+  }
+  return `<div class="card">
+    <div style="font-size:14px;font-weight:700;margin-bottom:8px">📊 スタッフ比較（${state.cursor.getFullYear()}年${state.cursor.getMonth() + 1}月）</div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>名前</th><th class="num">時給</th><th class="num">希望/シフトイン</th><th class="num">予定時間</th>
+          <th class="num">実績時間</th><th class="num">乖離率</th><th class="num">遅刻(当月)</th><th class="num">遅刻(3ヶ月)</th><th class="num">遅刻(半年)</th>
+        </tr></thead>
+        <tbody>${rows || `<tr><td colspan="9" style="text-align:center;color:var(--muted2)">スタッフが登録されていません</td></tr>`}</tbody>
+      </table>
+    </div>
+    ${state.lateSummaryLoading ? `<p class="note">遅刻回数を集計中…</p>` : ""}
+  </div>`;
 }
 
 function render() {
   const root = document.getElementById("root");
 
   if (!state.authed) {
+    if (state.showForgot) {
+      root.innerHTML = `
+        <header><h1 class="disp">👥 従業員管理</h1></header>
+        <div class="wrap" style="max-width:360px">
+          <div class="card">
+            <div style="font-size:14px;font-weight:700;margin-bottom:12px">🔑 パスワードの再設定</div>
+            ${state.forgotStep === "request" ? `
+              <p style="font-size:13px;color:var(--muted)">登録済みのメールアドレスに再設定コードを送信します。</p>
+              <button class="submit-btn" onclick="requestResetCode()">コードを送信する</button>
+            ` : `
+              <label class="field-label">メールに届いたコード</label>
+              <input type="text" id="resetCodeInput" placeholder="6桁のコード" />
+              <label class="field-label" style="margin-top:8px">新しいパスワード</label>
+              <input type="password" id="resetNewPassword" />
+              <label class="field-label" style="margin-top:8px">新しいパスワード（確認）</label>
+              <input type="password" id="resetNewPassword2" />
+              <button class="submit-btn" onclick="submitResetCode()">パスワードを再設定する</button>
+            `}
+            <div style="font-size:12px;color:var(--orange);margin-top:8px">${esc(state.forgotFlash)}</div>
+            <button onclick="backToLogin()" style="background:none;border:none;color:var(--muted);text-decoration:underline;font-size:12px;margin-top:12px;cursor:pointer">ログイン画面に戻る</button>
+          </div>
+        </div>
+      `;
+      return;
+    }
     root.innerHTML = `
-      <header><h1 class="disp">📊 打刻乖離率</h1></header>
+      <header><h1 class="disp">👥 従業員管理</h1></header>
       <div class="wrap" style="max-width:360px">
         <div class="card">
-          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">管理者パスワード</label>
+          <label class="field-label">管理者パスワード</label>
           <input type="password" id="devPasswordInput" />
           <button class="submit-btn" onclick="adminLogin()">入る</button>
           <div id="loginFlash" style="font-size:12px;color:var(--orange);margin-top:8px"></div>
+          <button onclick="showForgot()" style="background:none;border:none;color:var(--muted);text-decoration:underline;font-size:12px;margin-top:12px;cursor:pointer">パスワードを忘れた場合はこちら</button>
         </div>
       </div>
     `;
@@ -311,93 +669,20 @@ function render() {
     return;
   }
 
-  let body;
-  if (state.loading) {
-    body = `<div class="center-msg">読み込み中…</div>`;
-  } else {
-    let options = "";
-    for (const s of state.staffDirectory) {
-      options += `<option value="${esc(s.name)}" ${state.selectedName === s.name ? "selected" : ""}>${esc(s.name)}</option>`;
-    }
-
-    let totalScheduled = 0, totalActual = 0, lateCount = 0;
-    let rowsHtml = "";
-    for (const r of state.rows) {
-      totalScheduled += r.scheduledHours;
-      totalActual += r.actualHours;
-      if (r.isLate) lateCount++;
-      const dow = r.date.getDay();
-      rowsHtml += `<tr>
-        <td>${r.date.getDate()}日(${WEEKDAY_JP[dow]})</td>
-        <td class="num">${r.hasSchedule ? r.scheduledHours.toFixed(1) + "h" : "-"}</td>
-        <td class="num">${r.hasPunch ? r.actualHours.toFixed(1) + "h" : "-"}</td>
-        <td class="num">${r.hasSchedule && r.hasPunch ? (r.diff >= 0 ? "+" : "") + r.diff.toFixed(1) + "h" : "-"}</td>
-        <td class="num">${ratePill(r)}</td>
-        <td class="num">${r.isLate ? `<span class="pill pill-red">遅刻 ${r.lateMinutes}分</span>` : ""}</td>
-      </tr>`;
-    }
-    const monthDiff = totalActual - totalScheduled;
-    const monthRate = totalScheduled > 0 ? (monthDiff / totalScheduled) * 100 : 0;
-
-    body = `
-      <div class="card">
-        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">従業員</label>
-        <select onchange="onSelectStaff(this.value)">${options}</select>
-      </div>
-      <div class="card">
-        <div style="font-size:13px;font-weight:700;margin-bottom:4px">今月のまとめ（${esc(state.selectedName)}）</div>
-        <div class="summary-row">
-          <div class="summary-item"><div class="label">予定合計</div><div class="value">${totalScheduled.toFixed(1)}h</div></div>
-          <div class="summary-item"><div class="label">実績合計</div><div class="value">${totalActual.toFixed(1)}h</div></div>
-          <div class="summary-item"><div class="label">乖離</div><div class="value">${monthDiff >= 0 ? "+" : ""}${monthDiff.toFixed(1)}h</div></div>
-          <div class="summary-item"><div class="label">月間乖離率</div><div class="value">${totalScheduled > 0 ? (monthRate >= 0 ? "+" : "") + monthRate.toFixed(1) + "%" : "-"}</div></div>
-          <div class="summary-item"><div class="label">遅刻回数</div><div class="value">${lateCount}回</div></div>
-        </div>
-      </div>
-      <div class="card">
-        <table>
-          <thead><tr><th>日付</th><th class="num">予定</th><th class="num">実績</th><th class="num">差分</th><th class="num">乖離率</th><th class="num">遅刻</th></tr></thead>
-          <tbody>${rowsHtml || `<tr><td colspan="6" style="text-align:center;color:var(--muted2)">この月はデータがありません</td></tr>`}</tbody>
-        </table>
-        <p class="note">乖離率 = (実績時間 − 予定時間) ÷ 予定時間 × 100%。±10%以内は緑、実績が少ない(早退・欠勤など)は赤、実績が多い(残業など)は青。遅刻は予定の出勤時刻より${CONFIG.LATE_GRACE_MINUTES}分を超えて遅れて出勤打刻した日を数えています。</p>
-      </div>
-    `;
-  }
-
-  let lateSummaryHtml = "";
-  if (state.lateSummaryLoading) {
-    lateSummaryHtml = `<div class="card"><div style="font-size:13px;font-weight:700;margin-bottom:8px">🚨 遅刻回数（従業員別）</div><p style="font-size:13px;color:var(--muted2)">集計中…</p></div>`;
-  } else if (state.lateSummary) {
-    let rows = "";
-    for (const s of state.staffDirectory) {
-      const c = state.lateSummary[s.name] || { month: 0, q: 0, half: 0, total: 0 };
-      rows += `<tr>
-        <td>${esc(s.name)}</td>
-        <td class="num">${c.month}回</td>
-        <td class="num">${c.q}回</td>
-        <td class="num">${c.half}回</td>
-      </tr>`;
-    }
-    lateSummaryHtml = `
-      <div class="card">
-        <div style="font-size:13px;font-weight:700;margin-bottom:8px">🚨 遅刻回数（従業員別）</div>
-        <table>
-          <thead><tr><th>名前</th><th class="num">当月</th><th class="num">過去3ヶ月</th><th class="num">過去半年</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="4" style="text-align:center;color:var(--muted2)">データがありません</td></tr>`}</tbody>
-        </table>
-        <p class="note">「過去3ヶ月」「過去半年」は当月を含む直近の期間です。</p>
-      </div>
-    `;
-  }
+  const body = state.loading ? `<div class="center-msg">読み込み中…</div>` : (state.tab === "detail" ? renderDetailTab() : renderCompareTab());
 
   root.innerHTML = `
-    <header><h1 class="disp">📊 打刻乖離率</h1></header>
+    <header><h1 class="disp">👥 従業員管理</h1></header>
     <div class="wrap">
-      ${lateSummaryHtml}
+      ${state.flash ? `<div class="note" style="color:var(--green);font-weight:700">${esc(state.flash)}</div>` : ""}
       <div class="month-nav">
         <button onclick="changeMonth(-1)">‹</button>
         <div class="disp" style="font-size:17px">${state.cursor.getFullYear()}年 ${state.cursor.getMonth() + 1}月</div>
         <button onclick="changeMonth(1)">›</button>
+      </div>
+      <div class="tabs">
+        <button class="tab-btn ${state.tab === "detail" ? "active" : ""}" onclick="setTab('detail')">👤 スタッフ詳細</button>
+        <button class="tab-btn ${state.tab === "compare" ? "active" : ""}" onclick="setTab('compare')">📊 比較</button>
       </div>
       ${body}
     </div>
@@ -406,7 +691,21 @@ function render() {
 
 window.adminLogin = adminLogin;
 window.changeMonth = changeMonth;
-window.onSelectStaff = onSelectStaff;
+window.showForgot = showForgot;
+window.backToLogin = backToLogin;
+window.requestResetCode = requestResetCode;
+window.submitResetCode = submitResetCode;
+window.setTab = setTab;
+window.selectStaff = selectStaff;
+window.saveStaffAccount = saveStaffAccount;
+window.deleteStaffAccount = deleteStaffAccount;
+window.openEditPunch = openEditPunch;
+window.closeEditPunch = closeEditPunch;
+window.editRecordTypeChange = editRecordTypeChange;
+window.editRecordTimeChange = editRecordTimeChange;
+window.removeEditRecord = removeEditRecord;
+window.addEditRecord = addEditRecord;
+window.saveEditPunch = saveEditPunch;
 
 if (state.authed) { loadMonth(); loadLateSummary(); } else render();
 </script>

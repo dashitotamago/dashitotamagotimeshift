@@ -112,8 +112,9 @@
 <script>
 // ==== ここにGoogle Apps ScriptのウェブアプリURLを貼り付けてください ====
 const CONFIG = {
-  API_URL: "https://script.google.com/macros/s/AKfycbxwfYOVj6sYN9loitbwkOX5h0bJRCzz6uoyXVVk7QWQrbjmPP__QU1H0C1Y0LpMHNV3/exec",
+  API_URL: "https://script.google.com/macros/s/AKfycbzOSPmWXfZTvMLiOa8bucfhU3UgJdUqxucc7NWDCq2WMRHsjHqPFRDm34F8S3og8i_b/exec",
   ADMIN_PASSWORD: "0310",
+  LATE_GRACE_MINUTES: 1,
 };
 
 const WEEKDAY_JP = ["日", "月", "火", "水", "木", "金", "土"];
@@ -158,6 +159,20 @@ function slotHours(slot) {
   return mins / 60;
 }
 function fmtYen(n) { return "¥" + Math.round(n).toLocaleString("ja-JP"); }
+function hmDiffMinutes(aIso, bIso) { return (new Date(bIso) - new Date(aIso)) / 60000; }
+function calcHoursForPunches(records) {
+  const sorted = [...records].sort((a, b) => new Date(a.time) - new Date(b.time));
+  const inRec = sorted.find((r) => r.type === "in");
+  const outRecs = sorted.filter((r) => r.type === "out");
+  const outRec = outRecs.length ? outRecs[outRecs.length - 1] : null;
+  if (!inRec || !outRec) return 0;
+  const grossMin = hmDiffMinutes(inRec.time, outRec.time);
+  return grossMin > 0 ? grossMin / 60 : 0;
+}
+function firstInTime(records) {
+  const sorted = records.filter((r) => r.type === "in").sort((a, b) => new Date(a.time) - new Date(b.time));
+  return sorted.length ? new Date(sorted[0].time) : null;
+}
 
 async function apiGet(key) {
   try {
@@ -184,6 +199,28 @@ async function apiList(prefix) {
     return (data && data.keys) || [];
   } catch (e) { console.error("apiList failed", prefix, e); return []; }
 }
+async function apiListValues(prefix) {
+  try {
+    const res = await fetch(`${CONFIG.API_URL}?action=listValues&prefix=${encodeURIComponent(prefix)}`);
+    const data = await res.json();
+    const out = {};
+    for (const item of (data && data.items) || []) {
+      if (item.value == null || item.value === "") continue;
+      try { out[item.key] = JSON.parse(item.value); } catch (e) { /* skip malformed */ }
+    }
+    return out;
+  } catch (e) { console.error("apiListValues failed", prefix, e); return {}; }
+}
+async function apiAction(payload) {
+  try {
+    const res = await fetch(CONFIG.API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(payload),
+    });
+    return await res.json();
+  } catch (e) { console.error("apiAction failed", payload, e); return { error: String(e) }; }
+}
 
 // ---- app state ----
 const state = {
@@ -194,32 +231,55 @@ const state = {
   saving: false,
   flash: "",
   adminAuthed: sessionStorage.getItem("adminAuthed") === "1",
+  adminPasswordValue: null, // fetched from backend; null = not yet loaded
+  showForgotPassword: false,
+  forgotStep: "request", // "request" | "verify"
+  forgotFlash: "",
+  showAdminPasswordChange: false,
   staffAuthed: sessionStorage.getItem("staffAuthed") === "1",
   staffName: sessionStorage.getItem("staffAuthedName") || "",
   showPasswordChange: false,
+  submitSuccess: false,
   holidays: [],
   unlockedDates: [],
+  dateOverrides: {}, // dateKey -> custom slots array for that single day
+  slotsSnapshot: null, // { weekday, weekend } frozen at the moment this month's shifts were confirmed
+  editingDateSlots: null, // dateKey currently being edited, or null
+  editingSlotsList: [],
   weekdaySlots: DEFAULT_WEEKDAY_SLOTS,
   weekendSlots: DEFAULT_WEEKEND_SLOTS,
   mySubmission: {},
   allSubmissions: {},
   staffDirectory: [], // [{name, wage, password}]
   confirmed: {},
+  myRecord: null, // { rows, hoursTotal, wageTotal, lateCount }
+  myRecordLoading: false,
+  myRecordError: false,
 };
 
 function isWeekendType(d) {
   const dow = d.getDay();
   return dow === 0 || dow === 6 || state.holidays.includes(dateKey(d));
 }
-function slotsForDate(d) { return isWeekendType(d) ? state.weekendSlots : state.weekdaySlots; }
+function slotsForDate(d) {
+  const override = state.dateOverrides[dateKey(d)];
+  if (override && override.length) return override;
+  return isWeekendType(d) ? state.weekendSlots : state.weekdaySlots;
+}
 function availableStaffFor(dKey, slotId) {
-  return Object.entries(state.allSubmissions)
-    .filter(([, sub]) => {
-      const e = sub[dKey];
-      if (!e) return false;
-      return (e.slots || []).includes(slotId);
-    })
-    .map(([name]) => name);
+  const requested = new Set(
+    Object.entries(state.allSubmissions)
+      .filter(([, sub]) => {
+        const e = sub[dKey];
+        if (!e) return false;
+        return (e.slots || []).includes(slotId);
+      })
+      .map(([name]) => name)
+  );
+  const all = state.staffDirectory.map((s) => ({ name: s.name, requested: requested.has(s.name) }));
+  // 希望を出している人を先に、それ以外を後に
+  all.sort((a, b) => (b.requested - a.requested) || a.name.localeCompare(b.name, "ja"));
+  return all;
 }
 function wageOf(name) {
   const entry = state.staffDirectory.find((s) => s.name === name);
@@ -254,26 +314,130 @@ async function loadMonthData() {
   state.loading = true;
   render();
   const mKey = monthKey(state.cursor);
-  const cfg = await apiGet(`config:${mKey}`);
-  const slotsCfg = await apiGet(`slotsConfig`);
-  const conf = await apiGet(`confirmed:${mKey}`);
-  await loadStaffDirectory();
+  const [cfg, slotsCfg, conf, staffList, subValues] = await Promise.all([
+    apiGet(`config:${mKey}`),
+    apiGet(`slotsConfig`),
+    apiGet(`confirmed:${mKey}`),
+    apiGet(`staffList`),
+    apiListValues(`submission:${mKey}:`),
+  ]);
+  state.staffDirectory = normalizeStaffDirectory(staffList);
   let subs = {};
-  const keys = await apiList(`submission:${mKey}:`);
-  for (const k of keys) {
-    const name = k.split(":").slice(2).join(":");
-    const val = await apiGet(k);
-    if (val) subs[name] = val;
+  for (const key in subValues) {
+    const name = key.split(":").slice(2).join(":");
+    subs[name] = subValues[key];
   }
   state.holidays = (cfg && cfg.holidays) || [];
   state.unlockedDates = (cfg && cfg.unlockedDates) || [];
-  state.weekdaySlots = (slotsCfg && slotsCfg.weekday && slotsCfg.weekday.length) ? slotsCfg.weekday : DEFAULT_WEEKDAY_SLOTS;
-  state.weekendSlots = (slotsCfg && slotsCfg.weekend && slotsCfg.weekend.length) ? slotsCfg.weekend : DEFAULT_WEEKEND_SLOTS;
+  state.dateOverrides = (cfg && cfg.dateOverrides) || {};
+  state.slotsSnapshot = (cfg && cfg.slotsSnapshot) || null;
+  if (state.slotsSnapshot && state.slotsSnapshot.weekday && state.slotsSnapshot.weekday.length) {
+    state.weekdaySlots = state.slotsSnapshot.weekday;
+  } else {
+    state.weekdaySlots = (slotsCfg && slotsCfg.weekday && slotsCfg.weekday.length) ? slotsCfg.weekday : DEFAULT_WEEKDAY_SLOTS;
+  }
+  if (state.slotsSnapshot && state.slotsSnapshot.weekend && state.slotsSnapshot.weekend.length) {
+    state.weekendSlots = state.slotsSnapshot.weekend;
+  } else {
+    state.weekendSlots = (slotsCfg && slotsCfg.weekend && slotsCfg.weekend.length) ? slotsCfg.weekend : DEFAULT_WEEKEND_SLOTS;
+  }
   state.confirmed = conf || {};
   state.allSubmissions = subs;
   state.mySubmission = state.staffName && subs[state.staffName] ? subs[state.staffName] : {};
   state.loading = false;
   render();
+}
+
+function timeLabel(d) { return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }
+
+async function loadMyRecord() {
+  if (!state.staffName) return;
+  state.myRecordLoading = true;
+  state.myRecordError = false;
+  render();
+
+  try {
+    const now = new Date();
+    const mKey = monthKey(now);
+    const [cfg, slotsCfg, conf] = await Promise.all([
+      apiGet(`config:${mKey}`),
+      apiGet(`slotsConfig`),
+      apiGet(`confirmed:${mKey}`),
+    ]);
+    const holidays = (cfg && cfg.holidays) || [];
+    const snap = cfg && cfg.slotsSnapshot;
+    const weekdaySlotsM = (snap && snap.weekday && snap.weekday.length) ? snap.weekday : ((slotsCfg && slotsCfg.weekday && slotsCfg.weekday.length) ? slotsCfg.weekday : DEFAULT_WEEKDAY_SLOTS);
+    const weekendSlotsM = (snap && snap.weekend && snap.weekend.length) ? snap.weekend : ((slotsCfg && slotsCfg.weekend && slotsCfg.weekend.length) ? slotsCfg.weekend : DEFAULT_WEEKEND_SLOTS);
+    const confirmedM = conf || {};
+    const myWage = wageOf(state.staffName);
+
+    const dates = daysInMonth(now.getFullYear(), now.getMonth());
+    const rows = [];
+    let hoursTotal = 0, lateCount = 0;
+
+    const punchValues = await apiListValues(`punch:${mKey}`);
+    const recordsByDate = {};
+    for (const key in punchValues) {
+      const parts = key.split(":");
+      if (parts.length < 3) continue;
+      const dStr = parts[1];
+      const name = parts.slice(2).join(":");
+      if (name === state.staffName) recordsByDate[dStr] = punchValues[key];
+    }
+
+    for (const d of dates) {
+      if (d > now) continue;
+      const dKey = dateKey(d);
+      const records = recordsByDate[dKey];
+      if (!records || !records.length) continue;
+
+      const hours = calcHoursForPunches(records);
+      hoursTotal += hours;
+
+      const dow = d.getDay();
+      const weekend = dow === 0 || dow === 6 || holidays.includes(dKey);
+      const slots = weekend ? weekendSlotsM : weekdaySlotsM;
+      const dayConf = confirmedM[dKey] || {};
+      let scheduledStartMin = null;
+      for (const s of slots) {
+        if (dayConf[s.id] === state.staffName) {
+          const sm = hmToMinutes(s.start);
+          if (scheduledStartMin === null || sm < scheduledStartMin) scheduledStartMin = sm;
+        }
+      }
+      const inTime = firstInTime(records);
+      let isLate = false, lateMinutes = 0;
+      if (scheduledStartMin !== null && inTime) {
+        const actualMin = inTime.getHours() * 60 + inTime.getMinutes();
+        lateMinutes = actualMin - scheduledStartMin;
+        isLate = lateMinutes > CONFIG.LATE_GRACE_MINUTES;
+      }
+      if (isLate) lateCount++;
+
+      const inRecs = records.filter((r) => r.type === "in").sort((a, b) => new Date(a.time) - new Date(b.time));
+      const outRecs = records.filter((r) => r.type === "out").sort((a, b) => new Date(a.time) - new Date(b.time));
+      const inRec = inRecs.length ? inRecs[0] : null;
+      const outRec = outRecs.length ? outRecs[outRecs.length - 1] : null;
+
+      rows.push({
+        date: d,
+        dKey,
+        hours,
+        inLabel: inRec ? timeLabel(new Date(inRec.time)) : "-",
+        outLabel: outRec ? timeLabel(new Date(outRec.time)) : "-",
+        isLate,
+        lateMinutes,
+      });
+    }
+
+    state.myRecord = { rows, hoursTotal, wageTotal: hoursTotal * myWage, lateCount, monthLabel: `${now.getFullYear()}年${now.getMonth() + 1}月` };
+  } catch (err) {
+    console.error("loadMyRecord failed", err);
+    state.myRecordError = true;
+  } finally {
+    state.myRecordLoading = false;
+    render();
+  }
 }
 
 function flash(msg) {
@@ -283,7 +447,7 @@ function flash(msg) {
 }
 
 async function saveDateConfig() {
-  await apiSet(`config:${monthKey(state.cursor)}`, { holidays: state.holidays, unlockedDates: state.unlockedDates });
+  await apiSet(`config:${monthKey(state.cursor)}`, { holidays: state.holidays, unlockedDates: state.unlockedDates, dateOverrides: state.dateOverrides, slotsSnapshot: state.slotsSnapshot });
 }
 async function toggleHoliday(dKey) {
   state.holidays = state.holidays.includes(dKey) ? state.holidays.filter((h) => h !== dKey) : [...state.holidays, dKey];
@@ -292,6 +456,54 @@ async function toggleHoliday(dKey) {
   await saveDateConfig();
   state.saving = false;
   flash("設定を保存しました");
+}
+
+// ---- per-date shift time override ----
+function openDateSlotEditor(dKey) {
+  const d = new Date(dKey + "T00:00:00");
+  const existing = state.dateOverrides[dKey];
+  state.editingDateSlots = dKey;
+  state.editingSlotsList = existing && existing.length
+    ? existing.map((s) => ({ ...s }))
+    : slotsForDate(d).map((s) => ({ ...s }));
+  render();
+}
+function closeDateSlotEditor() {
+  state.editingDateSlots = null;
+  state.editingSlotsList = [];
+  render();
+}
+function addOverrideSlot() {
+  state.editingSlotsList = [...state.editingSlotsList, { id: uid(), label: "新しい枠", start: "09:00", end: "13:00" }];
+  render();
+}
+function removeOverrideSlot(id) {
+  state.editingSlotsList = state.editingSlotsList.filter((s) => s.id !== id);
+  render();
+}
+function updateOverrideSlotField(id, field, value) {
+  state.editingSlotsList = state.editingSlotsList.map((s) => (s.id === id ? { ...s, [field]: value } : s));
+}
+async function saveDateSlotOverride() {
+  const dKey = state.editingDateSlots;
+  state.dateOverrides = { ...state.dateOverrides, [dKey]: state.editingSlotsList };
+  state.saving = true; render();
+  await saveDateConfig();
+  state.saving = false;
+  state.editingDateSlots = null;
+  state.editingSlotsList = [];
+  flash("この日の時間を変更しました");
+}
+async function resetDateSlotOverride(dKey) {
+  const next = { ...state.dateOverrides };
+  delete next[dKey];
+  state.dateOverrides = next;
+  state.saving = true; render();
+  await saveDateConfig();
+  state.saving = false;
+  state.editingDateSlots = null;
+  state.editingSlotsList = [];
+  flash("通常の時間に戻しました");
 }
 async function toggleUnlock(dKey) {
   state.unlockedDates = state.unlockedDates.includes(dKey) ? state.unlockedDates.filter((h) => h !== dKey) : [...state.unlockedDates, dKey];
@@ -315,7 +527,10 @@ async function submitMyShift() {
   await apiSet(`submission:${mKey}:${state.staffName}`, state.mySubmission);
   state.allSubmissions = { ...state.allSubmissions, [state.staffName]: state.mySubmission };
   state.saving = false;
-  flash("希望シフトを送信しました");
+  state.submitSuccess = true;
+  render();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  setTimeout(() => { state.submitSuccess = false; render(); }, 4000);
 }
 
 function assign(dKey, field, name) {
@@ -324,9 +539,14 @@ function assign(dKey, field, name) {
 }
 async function saveConfirmed() {
   state.saving = true; render();
+  state.slotsSnapshot = {
+    weekday: state.weekdaySlots.map((s) => ({ ...s })),
+    weekend: state.weekendSlots.map((s) => ({ ...s })),
+  };
   await apiSet(`confirmed:${monthKey(state.cursor)}`, state.confirmed);
+  await saveDateConfig();
   state.saving = false;
-  flash("確定シフトを保存しました");
+  flash("確定シフトを保存しました（この月の時間設定も固定されました）");
 }
 
 // ---- slot (shift time / headcount) editing ----
@@ -390,6 +610,7 @@ async function staffLogin() {
   sessionStorage.setItem("staffAuthed", "1");
   sessionStorage.setItem("staffAuthedName", name);
   loadMonthData();
+  loadMyRecord();
 }
 function staffLogout() {
   state.staffAuthed = false;
@@ -418,16 +639,69 @@ function changeMonth(delta) {
   loadMonthData();
 }
 
+function effectiveAdminPassword() {
+  return state.adminPasswordValue != null ? state.adminPasswordValue : CONFIG.ADMIN_PASSWORD;
+}
+
 async function adminLogin() {
   const input = document.getElementById("adminPasswordInput");
   const value = input ? input.value : "";
-  if (value === CONFIG.ADMIN_PASSWORD) {
+  if (value === effectiveAdminPassword()) {
     state.adminAuthed = true;
     sessionStorage.setItem("adminAuthed", "1");
     await loadStaffDirectory();
     loadMonthData();
   } else {
     flash("パスワードが違います");
+  }
+}
+
+async function changeAdminPassword() {
+  const cur = document.getElementById("curAdminPasswordInput");
+  const pw1 = document.getElementById("newAdminPassword");
+  const pw2 = document.getElementById("newAdminPassword2");
+  if (!cur || cur.value !== effectiveAdminPassword()) { flash("現在のパスワードが違います"); return; }
+  if (!pw1.value || pw1.value !== pw2.value) { flash("新しいパスワードが一致しません"); return; }
+  state.saving = true; render();
+  await apiSet("adminPassword", pw1.value);
+  state.adminPasswordValue = pw1.value;
+  state.saving = false;
+  state.showAdminPasswordChange = false;
+  flash("管理者パスワードを変更しました");
+}
+
+async function requestResetCode() {
+  state.saving = true; render();
+  await apiAction({ action: "sendResetCode" });
+  state.saving = false;
+  state.forgotStep = "verify";
+  state.forgotFlash = "登録済みのメールアドレス宛にコードを送信しました";
+  render();
+}
+async function submitResetCode() {
+  const codeInput = document.getElementById("resetCodeInput");
+  const pw1 = document.getElementById("resetNewPassword");
+  const pw2 = document.getElementById("resetNewPassword2");
+  const code = codeInput ? codeInput.value.trim() : "";
+  if (!pw1.value || pw1.value !== pw2.value) {
+    state.forgotFlash = "新しいパスワードが一致しません";
+    render();
+    return;
+  }
+  state.saving = true; render();
+  const result = await apiAction({ action: "resetAdminPassword", code, newPassword: pw1.value });
+  state.saving = false;
+  if (result && result.ok) {
+    state.adminPasswordValue = pw1.value;
+    state.showForgotPassword = false;
+    state.forgotStep = "request";
+    state.forgotFlash = "";
+    flash("パスワードを再設定しました。新しいパスワードでログインしてください");
+    render();
+  } else {
+    const map = { bad_code: "コードが正しくありません", expired: "コードの有効期限が切れています", no_code: "先にコードを送信してください" };
+    state.forgotFlash = (result && map[result.error]) || "再設定に失敗しました";
+    render();
   }
 }
 
@@ -457,6 +731,14 @@ function renderInputTab() {
       <button class="text-link" data-action="staffLogout">ログアウト</button>
     </span>
   </div>`;
+
+  if (state.submitSuccess) {
+    html += `<div class="card" style="background:#2F6F4E;border-color:#2F6F4E;color:#fff;text-align:center;padding:20px">
+      <div style="font-size:32px">✅</div>
+      <div style="font-size:16px;font-weight:700;margin-top:6px">希望シフトを送信しました！</div>
+      <div style="font-size:12px;margin-top:4px;color:#DCE9E1">このまま画面を閉じても大丈夫です</div>
+    </div>`;
+  }
 
   if (state.showPasswordChange) {
     html += `<div class="card" style="margin-bottom:16px">
@@ -498,7 +780,7 @@ function renderInputTab() {
     html += `</div>`;
   }
   html += `</div>
-    <button class="submit-btn" data-action="submit">📨 この内容で希望シフトを送信</button>`;
+    <button class="submit-btn" style="${state.submitSuccess ? "background:#8AA99B" : ""}" data-action="submit" ${state.saving ? "disabled" : ""}>${state.saving ? "送信中…" : state.submitSuccess ? "✓ 送信済み（もう一度送信する）" : "📨 この内容で希望シフトを送信"}</button>`;
   return html;
 }
 
@@ -540,14 +822,52 @@ function renderAdminTab() {
   const dates = daysInMonth(state.cursor.getFullYear(), state.cursor.getMonth());
 
   let html = `<div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div style="font-size:14px;font-weight:500">🔑 管理者パスワード</div>
+      <button class="text-link" data-action="toggleAdminPasswordChange">${state.showAdminPasswordChange ? "閉じる" : "変更する"}</button>
+    </div>
+    ${state.showAdminPasswordChange ? `
+      <div style="margin-top:8px">
+        <label class="field-label">現在のパスワード</label>
+        <input type="password" id="curAdminPasswordInput" />
+        <label class="field-label" style="margin-top:8px">新しいパスワード</label>
+        <input type="password" id="newAdminPassword" />
+        <label class="field-label" style="margin-top:8px">新しいパスワード（確認）</label>
+        <input type="password" id="newAdminPassword2" />
+        <button class="save-btn" style="margin-top:12px" data-action="changeAdminPassword">変更する</button>
+      </div>
+    ` : ""}
+  </div>`;
+
+  html += `<div class="card" style="margin-top:12px">
+    <div style="font-size:14px;font-weight:500;margin-bottom:8px">📊 今月の希望・確定回数（${state.cursor.getMonth() + 1}月）</div>
+    ${state.staffDirectory.length === 0 ? `<p style="font-size:12px;color:var(--muted2);margin:0">スタッフが登録されていません。</p>` : `
+      <table>
+        <thead><tr><th>名前</th><th class="num">希望回数</th><th class="num">確定回数</th></tr></thead>
+        <tbody>
+          ${state.staffDirectory.map((s) => {
+            const sub = state.allSubmissions[s.name] || {};
+            const requestedCount = Object.values(sub).reduce((sum, e) => sum + ((e && e.slots) ? e.slots.length : 0), 0);
+            let confirmedCount = 0;
+            for (const dKey in state.confirmed) {
+              const dayConf = state.confirmed[dKey];
+              for (const slotId in dayConf) { if (dayConf[slotId] === s.name) confirmedCount++; }
+            }
+            return `<tr><td style="padding:4px 8px 4px 0">${esc(s.name)}</td><td class="num">${requestedCount}回</td><td class="num" style="font-weight:700">${confirmedCount}回</td></tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    `}
+  </div>`;
+
+  html += `<div class="card" style="margin-top:12px">
     <div style="font-size:14px;font-weight:500;margin-bottom:4px">🕐 シフト時間・人数の設定</div>
     <p style="font-size:12px;color:var(--muted2);margin:0">枠を追加すると、その日の人数を増やせます。削除すると人数が減ります。</p>
+    ${state.slotsSnapshot ? `<p style="font-size:12px;color:var(--orange);margin:6px 0 0">🔒 この月は一度「シフトを確定して保存」した時点の時間で固定されています。ここで変更しても、この月には反映されません（他の未確定の月の初期設定として使われます）。この月の時間を変えたい場合は、変更後にもう一度「シフトを確定して保存」を押してください。</p>` : ""}
     ${slotEditorHtml("weekday", state.weekdaySlots, "平日")}
     ${slotEditorHtml("weekend", state.weekendSlots, "土日祝")}
     <button class="save-btn" style="display:block;margin-top:16px" data-action="saveSlotsConfig">💾 シフト時間・人数を保存</button>
   </div>`;
-
-  html += staffEditorHtml();
 
   html += `<div class="card" style="margin-top:12px">
     <div style="font-size:14px;font-weight:500;margin-bottom:8px">⚠ 祝日の設定（クリックで土日祝扱いを切替）</div>
@@ -570,11 +890,38 @@ function renderAdminTab() {
     const conf = state.confirmed[dKey] || {};
     const deadlinePassed = isLocked(d);
     const unlocked = state.unlockedDates.includes(dKey);
-    html += `<div class="card">${dateLabelHtml(d, weekend)}`;
+    const hasOverride = !!(state.dateOverrides[dKey] && state.dateOverrides[dKey].length);
+    html += `<div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px">
+        <div>${dateLabelHtml(d, weekend)}${hasOverride ? ` <span class="badge" style="background:var(--orange-bg);color:var(--orange)">時間変更中</span>` : ""}</div>
+        <button class="text-link" data-action="openDateSlotEditor" data-date="${dKey}">🕐 この日だけ時間を変更</button>
+      </div>`;
     if (deadlinePassed) {
       html += `<button class="holiday-chip ${unlocked ? "active" : ""}" data-action="toggleUnlock" data-date="${dKey}" style="margin:8px 0 0">
         ${unlocked ? "🔓 受付延長中（クリックで締切に戻す）" : "🔒 締切済み（クリックで受付を再開）"}
       </button>`;
+    }
+    if (state.editingDateSlots === dKey) {
+      let rows = "";
+      for (const s of state.editingSlotsList) {
+        rows += `<div class="slot-editor-row">
+          <input type="text" value="${esc(s.label)}" data-action="overrideSlotLabel" data-id="${s.id}" placeholder="枠の名前" />
+          <input type="time" value="${s.start}" data-action="overrideSlotStart" data-id="${s.id}" />
+          〜
+          <input type="time" value="${s.end}" data-action="overrideSlotEnd" data-id="${s.id}" />
+          <button class="remove-btn" data-action="removeOverrideSlot" data-id="${s.id}">削除</button>
+        </div>`;
+      }
+      html += `<div class="card" style="background:#FBF8F2;margin-top:12px">
+        <div style="font-size:13px;font-weight:700;margin-bottom:4px">🕐 ${d.getMonth() + 1}/${d.getDate()}だけの時間設定</div>
+        ${rows}
+        <button class="add-btn" data-action="addOverrideSlot">＋ 枠を追加</button>
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+          <button class="submit-btn" style="margin-top:0;flex:1" data-action="saveDateSlotOverride">保存する</button>
+          ${hasOverride ? `<button class="remove-btn" data-action="resetDateSlotOverride" data-date="${dKey}">通常の時間に戻す</button>` : ""}
+          <button class="remove-btn" data-action="closeDateSlotEditor">キャンセル</button>
+        </div>
+      </div>`;
     }
     html += `<div style="margin-top:12px">`;
     for (const s of slotsForDate(d)) {
@@ -591,13 +938,56 @@ function renderAdminTab() {
 
 function assignRowHtml(label, value, options, dKey, field) {
   let opts = `<option value="">未定</option>`;
-  for (const name of options) {
-    opts += `<option value="${esc(name)}" ${value === name ? "selected" : ""}>${esc(name)}</option>`;
+  for (const o of options) {
+    const optLabel = o.requested ? `${o.name}（○希望あり）` : `${o.name}（希望なし）`;
+    opts += `<option value="${esc(o.name)}" ${value === o.name ? "selected" : ""}>${esc(optLabel)}</option>`;
   }
   return `<div class="assign-row">
     <span class="assign-label">${esc(label)}</span>
     <select data-action="assign" data-date="${dKey}" data-field="${field}">${opts}</select>
   </div>`;
+}
+
+function renderMyRecordTab() {
+  if (state.myRecordLoading) {
+    return `<div class="center-msg">読み込み中…</div>`;
+  }
+  if (state.myRecordError || !state.myRecord) {
+    return `<div class="center-msg">
+      <p>読み込みに失敗しました</p>
+      <button class="submit-btn" style="margin-top:12px" data-action="retryMyRecord">再読み込み</button>
+    </div>`;
+  }
+  const rec = state.myRecord;
+  let rows = "";
+  for (const r of rec.rows) {
+    const dow = r.date.getDay();
+    rows += `<tr>
+      <td>${r.date.getDate()}日(${WEEKDAY_JP[dow]})</td>
+      <td>${r.inLabel}</td>
+      <td>${r.outLabel}</td>
+      <td>${r.hours.toFixed(1)}h</td>
+      <td>${r.isLate ? `<span style="color:var(--rose);font-weight:700">遅刻 ${r.lateMinutes}分</span>` : ""}</td>
+    </tr>`;
+  }
+  return `
+    <div class="card">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px">${esc(rec.monthLabel)}の記録（${esc(state.staffName)}）</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <div><div style="font-size:11px;color:var(--muted)">労働時間</div><div style="font-size:20px;font-weight:700">${rec.hoursTotal.toFixed(1)}h</div></div>
+        <div><div style="font-size:11px;color:var(--muted)">現状の給与見込み</div><div style="font-size:20px;font-weight:700">${fmtYen(rec.wageTotal)}</div></div>
+        <div><div style="font-size:11px;color:var(--muted)">遅刻回数</div><div style="font-size:20px;font-weight:700">${rec.lateCount}回</div></div>
+      </div>
+      <p style="font-size:11px;color:var(--muted2);margin-top:8px">給与見込みは、今月これまでの打刻から計算した時給ベースの概算です。実際の支給額とは異なる場合があります。</p>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div style="font-size:13px;font-weight:700;margin-bottom:8px">打刻履歴</div>
+      <table>
+        <thead><tr><th>日付</th><th>出勤</th><th>退勤</th><th>時間</th><th>備考</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="5" style="text-align:center;color:var(--muted2)">この月の打刻記録はまだありません</td></tr>`}</tbody>
+      </table>
+    </div>
+  `;
 }
 
 function renderReportTab() {
@@ -614,7 +1004,7 @@ function renderReportTab() {
     monthTotal += cost;
     let cell = "";
     if (!assignedAny) cell = `<span style="color:var(--rose)">未確定</span>`;
-    else cell = slots.filter((s) => conf[s.id]).map((s) => `<div>${esc(s.label)}：${esc(conf[s.id])}</div>`).join("");
+    else cell = slots.filter((s) => conf[s.id]).map((s) => `<div>${esc(s.label)}（${s.start}〜${s.end}）：${esc(conf[s.id])}</div>`).join("");
     rows += `<tr><td>${dateLabelHtml(d, weekend)}</td><td>${cell}</td><td>${cost > 0 ? fmtYen(cost) : ""}</td></tr>`;
   }
   return `<div class="card">
@@ -631,7 +1021,7 @@ function renderStaffLoginGate() {
     <header><div class="wrap header-row">
       <div style="display:flex;align-items:center;gap:12px">
         <div class="logo-badge">📅</div>
-        <div><h1 class="disp">シフト管理板<span class="tag">スタッフ用</span></h1></div>
+        <div><h1 class="disp">シフト管理板<span class="tag">シフト提出</span></h1></div>
       </div>
     </div></header>
     <div class="wrap" style="padding-top:60px;max-width:360px">
@@ -662,11 +1052,41 @@ function render() {
   }
 
   if (state.route === "admin" && !state.adminAuthed) {
+    if (state.showForgotPassword) {
+      root.innerHTML = `
+        <header><div class="wrap header-row">
+          <div style="display:flex;align-items:center;gap:12px">
+            <div class="logo-badge">📅</div>
+            <div><h1 class="disp">シフト管理板<span class="tag">シフト管理</span></h1></div>
+          </div>
+        </div></header>
+        <div class="wrap" style="padding-top:60px;max-width:360px">
+          <div class="card">
+            <div style="font-size:14px;font-weight:700;margin-bottom:12px">🔑 パスワードの再設定</div>
+            ${state.forgotStep === "request" ? `
+              <p style="font-size:13px;color:var(--muted)">登録済みのメールアドレスに再設定コードを送信します。</p>
+              <button class="submit-btn" style="width:100%;justify-content:center" data-action="requestResetCode" ${state.saving ? "disabled" : ""}>${state.saving ? "送信中…" : "コードを送信する"}</button>
+            ` : `
+              <label class="field-label">メールに届いたコード</label>
+              <input type="text" id="resetCodeInput" placeholder="6桁のコード" />
+              <label class="field-label" style="margin-top:8px">新しいパスワード</label>
+              <input type="password" id="resetNewPassword" />
+              <label class="field-label" style="margin-top:8px">新しいパスワード（確認）</label>
+              <input type="password" id="resetNewPassword2" />
+              <button class="submit-btn" style="width:100%;justify-content:center" data-action="submitResetCode" ${state.saving ? "disabled" : ""}>${state.saving ? "処理中…" : "パスワードを再設定する"}</button>
+            `}
+            ${state.forgotFlash ? `<div class="flash" style="margin-top:8px">${esc(state.forgotFlash)}</div>` : ""}
+            <button class="text-link" style="margin-top:12px" data-action="backToLogin">ログイン画面に戻る</button>
+          </div>
+        </div>
+      `;
+      return;
+    }
     root.innerHTML = `
       <header><div class="wrap header-row">
         <div style="display:flex;align-items:center;gap:12px">
           <div class="logo-badge">📅</div>
-          <div><h1 class="disp">シフト管理板<span class="tag">管理者用</span></h1></div>
+          <div><h1 class="disp">シフト管理板<span class="tag">シフト管理</span></h1></div>
         </div>
       </div></header>
       <div class="wrap" style="padding-top:60px;max-width:360px">
@@ -675,6 +1095,7 @@ function render() {
           <input type="password" id="adminPasswordInput" placeholder="パスワードを入力" />
           <button class="submit-btn" style="width:100%;justify-content:center;margin-top:12px" data-action="adminLogin">入る</button>
           ${state.flash ? `<div class="flash" style="margin-top:8px">${esc(state.flash)}</div>` : ""}
+          <button class="text-link" style="margin-top:12px" data-action="showForgotPassword">パスワードを忘れた場合はこちら</button>
         </div>
       </div>
     `;
@@ -699,7 +1120,7 @@ function render() {
 
   const tabs = state.route === "admin"
     ? [{ id: "admin", label: "🔒 シフト確定" }, { id: "report", label: "📋 確定シフト表" }]
-    : [{ id: "input", label: "📨 希望シフト入力" }, { id: "report", label: "📋 確定シフト表" }];
+    : [{ id: "input", label: "📨 希望シフト入力" }, { id: "report", label: "📋 確定シフト表" }, { id: "myrecord", label: "🕐 自分の記録" }];
 
   let body;
   if (state.loading) {
@@ -708,6 +1129,8 @@ function render() {
     body = renderInputTab();
   } else if (state.tab === "admin") {
     body = renderAdminTab();
+  } else if (state.tab === "myrecord") {
+    body = renderMyRecordTab();
   } else {
     body = renderReportTab();
   }
@@ -717,13 +1140,13 @@ function render() {
       <div style="display:flex;align-items:center;gap:12px">
         <div class="logo-badge">📅</div>
         <div>
-          <h1 class="disp">シフト管理板<span class="tag">${state.route === "admin" ? "管理者用" : "スタッフ用"}</span></h1>
+          <h1 class="disp">シフト管理板<span class="tag">${state.route === "admin" ? "シフト管理" : "シフト提出"}</span></h1>
           <p class="sub">平日ワンオペ・土日祝二部制</p>
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:16px">
         ${(state.saving || state.flash) ? `<div class="flash">${state.saving ? "保存中…" : esc(state.flash)}</div>` : ""}
-        <a class="switch-link" href="${state.route === "admin" ? "#staff" : "#admin"}">${state.route === "admin" ? "スタッフ画面へ" : "管理者画面へ"}</a>
+        ${state.route === "admin" ? `<a class="switch-link" href="#staff">スタッフ画面へ</a>` : ""}
       </div>
     </div></header>
     <div class="wrap">
@@ -748,13 +1171,30 @@ document.addEventListener("click", (e) => {
   const action = el.dataset.action;
   if (action === "prevMonth") changeMonth(-1);
   else if (action === "nextMonth") changeMonth(1);
-  else if (action === "setTab") { state.tab = el.dataset.tab; render(); }
+  else if (action === "setTab") {
+    state.tab = el.dataset.tab;
+    render();
+    if (state.tab === "myrecord" && !state.myRecord && !state.myRecordLoading) loadMyRecord();
+  }
+  else if (action === "retryMyRecord") loadMyRecord();
   else if (action === "toggleSlot") toggleSlot(el.dataset.date, el.dataset.slot);
   else if (action === "submit") submitMyShift();
   else if (action === "toggleHoliday") toggleHoliday(el.dataset.date);
   else if (action === "toggleUnlock") toggleUnlock(el.dataset.date);
+  else if (action === "openDateSlotEditor") openDateSlotEditor(el.dataset.date);
+  else if (action === "closeDateSlotEditor") closeDateSlotEditor();
+  else if (action === "addOverrideSlot") addOverrideSlot();
+  else if (action === "removeOverrideSlot") removeOverrideSlot(el.dataset.id);
+  else if (action === "saveDateSlotOverride") saveDateSlotOverride();
+  else if (action === "resetDateSlotOverride") resetDateSlotOverride(el.dataset.date);
   else if (action === "saveConfirmed") saveConfirmed();
   else if (action === "adminLogin") adminLogin();
+  else if (action === "showForgotPassword") { state.showForgotPassword = true; state.forgotStep = "request"; state.forgotFlash = ""; render(); }
+  else if (action === "backToLogin") { state.showForgotPassword = false; state.forgotFlash = ""; render(); }
+  else if (action === "requestResetCode") requestResetCode();
+  else if (action === "submitResetCode") submitResetCode();
+  else if (action === "toggleAdminPasswordChange") { state.showAdminPasswordChange = !state.showAdminPasswordChange; render(); }
+  else if (action === "changeAdminPassword") changeAdminPassword();
   else if (action === "addSlot") addSlot(el.dataset.type);
   else if (action === "removeSlot") removeSlot(el.dataset.type, el.dataset.id);
   else if (action === "saveSlotsConfig") saveSlotsConfig();
@@ -774,6 +1214,9 @@ document.addEventListener("change", (e) => {
   else if (action === "slotLabel") updateSlotField(el.dataset.type, el.dataset.id, "label", el.value);
   else if (action === "slotStart") updateSlotField(el.dataset.type, el.dataset.id, "start", el.value);
   else if (action === "slotEnd") updateSlotField(el.dataset.type, el.dataset.id, "end", el.value);
+  else if (action === "overrideSlotLabel") updateOverrideSlotField(el.dataset.id, "label", el.value);
+  else if (action === "overrideSlotStart") updateOverrideSlotField(el.dataset.id, "start", el.value);
+  else if (action === "overrideSlotEnd") updateOverrideSlotField(el.dataset.id, "end", el.value);
   else if (action === "staffName") updateStaffField(Number(el.dataset.index), "name", el.value);
   else if (action === "staffWage") updateStaffField(Number(el.dataset.index), "wage", el.value);
   else if (action === "staffPassword") updateStaffField(Number(el.dataset.index), "password", el.value);
@@ -789,12 +1232,15 @@ window.addEventListener("hashchange", () => {
   if (!CONFIG.API_URL || CONFIG.API_URL.indexOf("YOUR_APPS_SCRIPT") === 0) { render(); return; }
   state.loading = true;
   render();
+  const storedPw = await apiGet("adminPassword");
+  state.adminPasswordValue = storedPw != null ? storedPw : null;
   await loadStaffDirectory();
   if (state.route === "admin") {
     if (state.adminAuthed) { loadMonthData(); } else { state.loading = false; render(); }
   } else {
     if (state.staffAuthed && state.staffDirectory.find((s) => s.name === state.staffName)) {
       loadMonthData();
+      loadMyRecord();
     } else {
       state.staffAuthed = false;
       state.loading = false;

@@ -33,13 +33,14 @@
 <div id="root"></div>
 <script>
 const CONFIG = {
-  API_URL: "https://script.google.com/macros/s/AKfycbxwfYOVj6sYN9loitbwkOX5h0bJRCzz6uoyXVVk7QWQrbjmPP__QU1H0C1Y0LpMHNV3/exec",
+  API_URL: "https://script.google.com/macros/s/AKfycbzOSPmWXfZTvMLiOa8bucfhU3UgJdUqxucc7NWDCq2WMRHsjHqPFRDm34F8S3og8i_b/exec",
   ADMIN_PASSWORD: "0310",
 };
 
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 function fmtYen(n) { return "¥" + Math.round(n).toLocaleString("ja-JP"); }
 function monthKey(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
+function dateKey(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
 
 async function apiGet(key) {
   try {
@@ -56,13 +57,36 @@ async function apiList(prefix) {
     return (data && data.keys) || [];
   } catch (e) { console.error("apiList failed", prefix, e); return []; }
 }
+async function apiListValues(prefix) {
+  try {
+    const res = await fetch(`${CONFIG.API_URL}?action=listValues&prefix=${encodeURIComponent(prefix)}`);
+    const data = await res.json();
+    const out = {};
+    for (const item of (data && data.items) || []) {
+      if (item.value == null || item.value === "") continue;
+      try { out[item.key] = JSON.parse(item.value); } catch (e) { /* skip malformed */ }
+    }
+    return out;
+  } catch (e) { console.error("apiListValues failed", prefix, e); return {}; }
+}
+async function apiAction(payload) {
+  try {
+    const res = await fetch(CONFIG.API_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(payload) });
+    return await res.json();
+  } catch (e) { console.error("apiAction failed", payload, e); return { error: String(e) }; }
+}
 function normalizeStaffDirectory(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.map((item) =>
     typeof item === "string"
-      ? { name: item, wage: 0 }
-      : { name: item.name, wage: Number(item.wage) || 0 }
+      ? { name: item, wage: 0, wageHistory: [] }
+      : { name: item.name, wage: Number(item.wage) || 0, wageHistory: Array.isArray(item.wageHistory) ? item.wageHistory : [] }
   );
+}
+function wageForMonth(s, mKey) {
+  if (!s.wageHistory || !s.wageHistory.length) return s.wage;
+  const applicable = s.wageHistory.filter((h) => h.from <= mKey).sort((a, b) => a.from.localeCompare(b.from));
+  return applicable.length ? applicable[applicable.length - 1].wage : s.wage;
 }
 
 const state = {
@@ -71,6 +95,14 @@ const state = {
   loading: true,
   staffDirectory: [],
   rows: [],
+  dailyByDate: {}, // dateStr -> { name -> hours }
+  selectedDate: "",
+  rangeStart: "",
+  rangeEnd: "",
+  adminPasswordValue: null,
+  showForgot: false,
+  forgotStep: "request",
+  forgotFlash: "",
 };
 
 function hmDiffMinutes(aIso, bIso) { return (new Date(bIso) - new Date(aIso)) / 60000; }
@@ -87,33 +119,45 @@ function calcHoursForPunches(records) {
 
 async function loadPayroll() {
   state.loading = true; render();
-  const list = await apiGet("staffList");
-  state.staffDirectory = normalizeStaffDirectory(list);
   const mKey = monthKey(state.cursor);
-  const keys = await apiList(`punch:${mKey}`);
+  const [list, punchValues] = await Promise.all([apiGet("staffList"), apiListValues(`punch:${mKey}`)]);
+  state.staffDirectory = normalizeStaffDirectory(list);
 
   // key format: punch:YYYY-MM-DD:name
+  const parsed = Object.keys(punchValues)
+    .map((k) => {
+      const parts = k.split(":");
+      if (parts.length < 3) return null;
+      return { key: k, dateStr: parts[1], name: parts.slice(2).join(":"), records: punchValues[k] };
+    })
+    .filter(Boolean);
+
   const perStaff = {}; // name -> { days: Set, hours: number }
-  for (const k of keys) {
-    const parts = k.split(":");
-    if (parts.length < 3) continue;
-    const dateStr = parts[1];
-    const name = parts.slice(2).join(":");
-    const records = await apiGet(k);
+  const dailyByDate = {}; // dateStr -> { name -> hours }
+  for (const p of parsed) {
+    const records = p.records;
     if (!records || !records.length) continue;
     const hours = calcHoursForPunches(records);
     if (hours <= 0) continue;
-    if (!perStaff[name]) perStaff[name] = { days: new Set(), hours: 0 };
-    perStaff[name].days.add(dateStr);
-    perStaff[name].hours += hours;
+    if (!perStaff[p.name]) perStaff[p.name] = { days: new Set(), hours: 0 };
+    perStaff[p.name].days.add(p.dateStr);
+    perStaff[p.name].hours += hours;
+    if (!dailyByDate[p.dateStr]) dailyByDate[p.dateStr] = {};
+    dailyByDate[p.dateStr][p.name] = (dailyByDate[p.dateStr][p.name] || 0) + hours;
+  }
+  state.dailyByDate = dailyByDate;
+  if (!state.selectedDate || !dailyByDate[state.selectedDate]) {
+    const availableDates = Object.keys(dailyByDate).sort();
+    state.selectedDate = availableDates.length ? availableDates[availableDates.length - 1] : "";
   }
 
   const rows = [];
+  const mKeyForWage = monthKey(state.cursor);
   for (const s of state.staffDirectory) {
     const rec = perStaff[s.name];
     const days = rec ? rec.days.size : 0;
     const hours = rec ? rec.hours : 0;
-    const wageCost = hours * s.wage;
+    const wageCost = hours * wageForMonth(s, mKeyForWage);
     rows.push({ name: s.name, days, hours, wageCost, total: wageCost });
   }
   state.rows = rows;
@@ -121,15 +165,54 @@ async function loadPayroll() {
   render();
 }
 
-function adminLogin() {
+function copyDailyText(taId, btnId) {
+  const ta = document.getElementById(taId || "dailyCopyArea");
+  if (!ta) return;
+  ta.select();
+  ta.setSelectionRange(0, 99999);
+  try {
+    document.execCommand("copy");
+    const btn = document.getElementById(btnId || "copyBtn");
+    if (btn) { const orig = btn.textContent; btn.textContent = "コピーしました！"; setTimeout(() => { btn.textContent = orig; }, 1500); }
+  } catch (e) { /* ignore */ }
+}
+
+function effectiveAdminPassword() { return state.adminPasswordValue != null ? state.adminPasswordValue : CONFIG.ADMIN_PASSWORD; }
+
+async function adminLogin() {
   const input = document.getElementById("payrollPasswordInput");
   const value = input ? input.value : "";
-  if (value === CONFIG.ADMIN_PASSWORD) {
+  if (value === effectiveAdminPassword()) {
     state.authed = true;
     sessionStorage.setItem("payrollAuthed", "1");
     loadPayroll();
   } else {
     flashLogin("パスワードが違います");
+  }
+}
+function showForgot() { state.showForgot = true; state.forgotStep = "request"; state.forgotFlash = ""; render(); }
+function backToLogin() { state.showForgot = false; state.forgotFlash = ""; render(); }
+async function requestResetCode() {
+  await apiAction({ action: "sendResetCode" });
+  state.forgotStep = "verify";
+  state.forgotFlash = "登録済みのメールアドレス宛にコードを送信しました";
+  render();
+}
+async function submitResetCode() {
+  const code = document.getElementById("resetCodeInput").value.trim();
+  const pw1 = document.getElementById("resetNewPassword").value;
+  const pw2 = document.getElementById("resetNewPassword2").value;
+  if (!pw1 || pw1 !== pw2) { state.forgotFlash = "新しいパスワードが一致しません"; render(); return; }
+  const result = await apiAction({ action: "resetAdminPassword", code, newPassword: pw1 });
+  if (result && result.ok) {
+    state.adminPasswordValue = pw1;
+    state.showForgot = false;
+    flashLogin("");
+    render();
+  } else {
+    const map = { bad_code: "コードが正しくありません", expired: "コードの有効期限が切れています", no_code: "先にコードを送信してください" };
+    state.forgotFlash = (result && map[result.error]) || "再設定に失敗しました";
+    render();
   }
 }
 function flashLogin(msg) {
@@ -138,13 +221,108 @@ function flashLogin(msg) {
 }
 function changeMonth(delta) {
   state.cursor = new Date(state.cursor.getFullYear(), state.cursor.getMonth() + delta, 1);
+  state.rangeStart = "";
+  state.rangeEnd = "";
   loadPayroll();
+}
+
+function dailyTotalFor(dateStr) {
+  const dayData = state.dailyByDate[dateStr] || {};
+  const mKeyForDate = dateStr.slice(0, 7);
+  let total = 0;
+  for (const s of state.staffDirectory) {
+    const hours = dayData[s.name];
+    if (hours) total += hours * wageForMonth(s, mKeyForDate);
+  }
+  return total;
+}
+
+function changeRangeStart(v) { state.rangeStart = v; render(); }
+function changeRangeEnd(v) { state.rangeEnd = v; render(); }
+
+function renderDailyCopySection() {
+  const mKey = monthKey(state.cursor);
+  const daysInMonthCount = new Date(state.cursor.getFullYear(), state.cursor.getMonth() + 1, 0).getDate();
+  const monthMin = `${mKey}-01`;
+  const monthMax = `${mKey}-${String(daysInMonthCount).padStart(2, "0")}`;
+  if (!state.rangeStart) state.rangeStart = monthMin;
+  if (!state.rangeEnd) state.rangeEnd = monthMax;
+
+  const start = state.rangeStart < monthMin ? monthMin : state.rangeStart;
+  const end = state.rangeEnd > monthMax ? monthMax : state.rangeEnd;
+
+  const dateList = [];
+  if (start && end && start <= end) {
+    let cur = new Date(start + "T00:00:00");
+    const endD = new Date(end + "T00:00:00");
+    while (cur <= endD) {
+      dateList.push(dateKey(cur));
+      cur.setDate(cur.getDate() + 1);
+    }
+  }
+
+  const amountLines = [];
+  let total = 0;
+  for (const d of dateList) {
+    const cost = Math.round(dailyTotalFor(d));
+    total += cost;
+    amountLines.push(String(cost));
+  }
+  const amountText = amountLines.join("\n");
+  const rowCount = Math.max(3, amountLines.length + 1);
+
+  return `
+    <div class="card">
+      <div style="font-size:14px;font-weight:700;margin-bottom:8px">📋 期間ごとの人件費（コピー用）</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <div style="flex:1;min-width:140px">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">開始日</label>
+          <input type="date" value="${start}" min="${monthMin}" max="${monthMax}" onchange="changeRangeStart(this.value)" />
+        </div>
+        <div style="flex:1;min-width:140px">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">終了日</label>
+          <input type="date" value="${end}" min="${monthMin}" max="${monthMax}" onchange="changeRangeEnd(this.value)" />
+        </div>
+      </div>
+      ${amountLines.length ? `
+        <label style="font-size:12px;color:var(--muted);display:block;margin:10px 0 4px">その日の人件費（${start}〜${end}、${amountLines.length}日分）</label>
+        <textarea id="dailyCopyAmounts" readonly style="width:100%;font-family:monospace;font-size:13px;border:1px solid var(--border);border-radius:6px;padding:8px;height:${rowCount * 22}px">${amountText}</textarea>
+        <button id="copyAmountsBtn" class="submit-btn" style="margin-top:6px" onclick="copyDailyText('dailyCopyAmounts','copyAmountsBtn')">📋 金額をコピー</button>
+        <p class="note">1日1行で、その日にシフトインした全スタッフ分の合計人件費が並びます。期間合計：${fmtYen(total)}</p>
+      ` : `<p class="note" style="margin-top:8px">期間を選択してください。</p>`}
+    </div>
+  `;
 }
 
 function render() {
   const root = document.getElementById("root");
 
   if (!state.authed) {
+    if (state.showForgot) {
+      root.innerHTML = `
+        <header><h1 class="disp">💰 月次給与集計</h1></header>
+        <div class="wrap" style="max-width:360px">
+          <div class="card">
+            <div style="font-size:14px;font-weight:700;margin-bottom:12px">🔑 パスワードの再設定</div>
+            ${state.forgotStep === "request" ? `
+              <p style="font-size:13px;color:var(--muted)">登録済みのメールアドレスに再設定コードを送信します。</p>
+              <button class="submit-btn" onclick="requestResetCode()">コードを送信する</button>
+            ` : `
+              <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">メールに届いたコード</label>
+              <input type="text" id="resetCodeInput" placeholder="6桁のコード" style="width:100%;border:1px solid var(--border);border-radius:6px;padding:10px;font-size:16px" />
+              <label style="font-size:12px;color:var(--muted);display:block;margin:8px 0 4px">新しいパスワード</label>
+              <input type="password" id="resetNewPassword" style="width:100%;border:1px solid var(--border);border-radius:6px;padding:10px;font-size:16px" />
+              <label style="font-size:12px;color:var(--muted);display:block;margin:8px 0 4px">新しいパスワード（確認）</label>
+              <input type="password" id="resetNewPassword2" style="width:100%;border:1px solid var(--border);border-radius:6px;padding:10px;font-size:16px" />
+              <button class="submit-btn" onclick="submitResetCode()">パスワードを再設定する</button>
+            `}
+            <div style="font-size:12px;color:var(--orange);margin-top:8px">${state.forgotFlash}</div>
+            <button onclick="backToLogin()" style="background:none;border:none;color:var(--muted);text-decoration:underline;font-size:12px;margin-top:12px;cursor:pointer">ログイン画面に戻る</button>
+          </div>
+        </div>
+      `;
+      return;
+    }
     root.innerHTML = `
       <header><h1 class="disp">💰 月次給与集計</h1></header>
       <div class="wrap" style="max-width:360px">
@@ -153,6 +331,7 @@ function render() {
           <input type="password" id="payrollPasswordInput" />
           <button class="submit-btn" onclick="adminLogin()">入る</button>
           <div id="loginFlash" style="font-size:12px;color:var(--orange);margin-top:8px"></div>
+          <button onclick="showForgot()" style="background:none;border:none;color:var(--muted);text-decoration:underline;font-size:12px;margin-top:12px;cursor:pointer">パスワードを忘れた場合はこちら</button>
         </div>
       </div>
     `;
@@ -189,6 +368,7 @@ function render() {
         <div class="grand-total">今月の支払総額：${fmtYen(grand)}</div>
         <p class="note">打刻データ（出勤〜退勤、休憩を除く実労働時間）と、スタッフ設定の時給から自動計算しています。</p>
       </div>
+      ${renderDailyCopySection()}
     `;
   }
 
@@ -207,8 +387,24 @@ function render() {
 
 window.adminLogin = adminLogin;
 window.changeMonth = changeMonth;
+window.showForgot = showForgot;
+window.backToLogin = backToLogin;
+window.requestResetCode = requestResetCode;
+window.submitResetCode = submitResetCode;
+window.changeRangeStart = changeRangeStart;
+window.changeRangeEnd = changeRangeEnd;
+window.copyDailyText = copyDailyText;
 
-if (state.authed) loadPayroll(); else render();
+(async function boot() {
+  if (state.authed) {
+    const [storedPw] = await Promise.all([apiGet("adminPassword"), loadPayroll()]);
+    state.adminPasswordValue = storedPw != null ? storedPw : null;
+  } else {
+    const storedPw = await apiGet("adminPassword");
+    state.adminPasswordValue = storedPw != null ? storedPw : null;
+    render();
+  }
+})();
 </script>
 </body>
 </html>

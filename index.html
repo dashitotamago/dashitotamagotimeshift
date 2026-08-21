@@ -257,9 +257,77 @@ const state = {
   myRecordError: false,
 };
 
+// ---- 日本の祝日を自動計算 ----
+const _holidayCache = {};
+function nthMonday(year, month, n) {
+  const d = new Date(year, month - 1, 1);
+  let count = 0;
+  while (true) {
+    if (d.getDay() === 1) { count++; if (count === n) return new Date(d); }
+    d.setDate(d.getDate() + 1);
+  }
+}
+function vernalEquinox(year) {
+  return Math.floor(20.8431 + 0.242194 * (year - 1980) - Math.floor((year - 1980) / 4));
+}
+function autumnalEquinox(year) {
+  return Math.floor(23.2488 + 0.242194 * (year - 1980) - Math.floor((year - 1980) / 4));
+}
+function getJapanHolidays(year) {
+  if (_holidayCache[year]) return _holidayCache[year];
+  const list = []; // { date: Date, name: string }
+  const add = (m, d, name) => list.push({ date: new Date(year, m - 1, d), name });
+  add(1, 1, "元日");
+  list.push({ date: nthMonday(year, 1, 2), name: "成人の日" });
+  add(2, 11, "建国記念の日");
+  add(2, 23, "天皇誕生日");
+  add(3, vernalEquinox(year), "春分の日");
+  add(4, 29, "昭和の日");
+  add(5, 3, "憲法記念日");
+  add(5, 4, "みどりの日");
+  add(5, 5, "こどもの日");
+  list.push({ date: nthMonday(year, 7, 3), name: "海の日" });
+  add(8, 11, "山の日");
+  list.push({ date: nthMonday(year, 9, 3), name: "敬老の日" });
+  add(9, autumnalEquinox(year), "秋分の日");
+  list.push({ date: nthMonday(year, 10, 2), name: "スポーツの日" });
+  add(11, 3, "文化の日");
+  add(11, 23, "勤労感謝の日");
+
+  const byKey = {};
+  for (const h of list) byKey[dateKey(h.date)] = h.name;
+
+  // 振替休日: 日曜の祝日の次の平日(まだ祝日でない日)を休日にする
+  for (const h of [...list]) {
+    if (h.date.getDay() === 0) {
+      let sub = new Date(h.date);
+      do { sub.setDate(sub.getDate() + 1); } while (byKey[dateKey(sub)]);
+      byKey[dateKey(sub)] = "振替休日";
+    }
+  }
+  // 国民の休日: 祝日と祝日に挟まれた平日(日曜でない)も休日にする
+  const sortedKeys = Object.keys(byKey).sort();
+  for (const k of sortedKeys) {
+    const d = new Date(k + "T00:00:00");
+    const next = new Date(d); next.setDate(next.getDate() + 2);
+    const between = new Date(d); between.setDate(between.getDate() + 1);
+    if (between.getDay() !== 0 && !byKey[dateKey(between)] && byKey[dateKey(next)]) {
+      byKey[dateKey(between)] = "国民の休日";
+    }
+  }
+  _holidayCache[year] = byKey;
+  return byKey;
+}
+function isPublicHoliday(d) {
+  return !!getJapanHolidays(d.getFullYear())[dateKey(d)];
+}
+function publicHolidayName(d) {
+  return getJapanHolidays(d.getFullYear())[dateKey(d)] || "";
+}
+
 function isWeekendType(d) {
   const dow = d.getDay();
-  return dow === 0 || dow === 6 || state.holidays.includes(dateKey(d));
+  return dow === 0 || dow === 6 || isPublicHoliday(d) || state.holidays.includes(dateKey(d));
 }
 function slotsForDate(d) {
   const override = state.dateOverrides[dateKey(d)];
@@ -281,18 +349,25 @@ function availableStaffFor(dKey, slotId) {
   all.sort((a, b) => (b.requested - a.requested) || a.name.localeCompare(b.name, "ja"));
   return all;
 }
-function wageOf(name) {
+function wageOf(name, mKey) {
   const entry = state.staffDirectory.find((s) => s.name === name);
-  return entry ? Number(entry.wage) || 0 : 0;
+  if (!entry) return 0;
+  const targetMKey = mKey || monthKey(state.cursor);
+  if (Array.isArray(entry.wageHistory) && entry.wageHistory.length) {
+    const applicable = entry.wageHistory.filter((h) => h.from <= targetMKey).sort((a, b) => a.from.localeCompare(b.from));
+    if (applicable.length) return Number(applicable[applicable.length - 1].wage) || 0;
+  }
+  return Number(entry.wage) || 0;
 }
 function dailyCost(d) {
   const dKey = dateKey(d);
   const conf = state.confirmed[dKey] || {};
   const slots = slotsForDate(d);
+  const mKey = monthKey(d);
   let total = 0;
   for (const s of slots) {
     const name = conf[s.id];
-    if (name) total += slotHours(s) * wageOf(name);
+    if (name) total += slotHours(s) * wageOf(name, mKey);
   }
   return total;
 }
@@ -300,8 +375,8 @@ function normalizeStaffDirectory(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.map((item) =>
     typeof item === "string"
-      ? { name: item, wage: 0, password: "" }
-      : { name: item.name, wage: Number(item.wage) || 0, password: item.password || "" }
+      ? { name: item, wage: 0, password: "", wageHistory: [] }
+      : { name: item.name, wage: Number(item.wage) || 0, password: item.password || "", wageHistory: Array.isArray(item.wageHistory) ? item.wageHistory : [] }
   );
 }
 
@@ -709,10 +784,11 @@ async function submitResetCode() {
 function dateLabelHtml(d, weekend) {
   const dow = d.getDay();
   const color = dow === 0 ? "var(--rose)" : dow === 6 ? "var(--green)" : "var(--ink)";
+  const holName = publicHolidayName(d);
   return `<div class="date-label">
     <span class="date-num" style="color:${color}">${d.getDate()}日</span>
     <span class="date-dow" style="color:${color}">(${WEEKDAY_JP[dow]})</span>
-    ${weekend ? `<span class="badge badge-weekend">土日祝</span>` : ""}
+    ${holName ? `<span class="badge badge-weekend">${esc(holName)}</span>` : weekend ? `<span class="badge badge-weekend">土日祝</span>` : ""}
   </div>`;
 }
 
@@ -870,10 +946,16 @@ function renderAdminTab() {
   </div>`;
 
   html += `<div class="card" style="margin-top:12px">
-    <div style="font-size:14px;font-weight:500;margin-bottom:8px">⚠ 祝日の設定（クリックで土日祝扱いを切替）</div>
+    <div style="font-size:14px;font-weight:500;margin-bottom:4px">⚠ 祝日の設定</div>
+    <p style="font-size:12px;color:var(--muted2);margin:0 0 8px">カレンダー上の祝日は自動で土日祝扱いになります（オレンジ色・クリック不可）。それ以外に臨時休業などで土日祝扱いにしたい日は、クリックで追加できます。</p>
     <div>`;
   for (const d of dates.filter((d) => d.getDay() !== 0 && d.getDay() !== 6)) {
     const dKey = dateKey(d);
+    const holName = publicHolidayName(d);
+    if (holName) {
+      html += `<span class="holiday-chip active" style="cursor:default" title="${esc(holName)}">${d.getDate()}日</span>`;
+      continue;
+    }
     const isHol = state.holidays.includes(dKey);
     html += `<button class="holiday-chip ${isHol ? "active" : ""}" data-action="toggleHoliday" data-date="${dKey}">${d.getDate()}日</button>`;
   }

@@ -140,9 +140,14 @@ function normalizeStaffDirectory(raw) {
   if (!Array.isArray(raw)) return [];
   return raw.map((item) =>
     typeof item === "string"
-      ? { name: item, wage: 0, password: "" }
-      : { name: item.name, wage: Number(item.wage) || 0, password: item.password || "" }
+      ? { name: item, wage: 0, password: "", wageHistory: [] }
+      : { name: item.name, wage: Number(item.wage) || 0, password: item.password || "", wageHistory: Array.isArray(item.wageHistory) ? item.wageHistory : [] }
   );
+}
+function wageForMonth(s, mKey) {
+  if (!s.wageHistory || !s.wageHistory.length) return s.wage;
+  const applicable = s.wageHistory.filter((h) => h.from <= mKey).sort((a, b) => a.from.localeCompare(b.from));
+  return applicable.length ? applicable[applicable.length - 1].wage : s.wage;
 }
 
 const state = {
@@ -166,12 +171,68 @@ const state = {
   allSubmissions: {}, // name -> submission object
   lateSummary: null, // { name: { month, q, half } }
   lateSummaryLoading: false,
+  lateCountResetAt: null,
   editDate: null,
   editRecords: [],
   flash: "",
 };
 
-function isWeekendType(d) { const dow = d.getDay(); return dow === 0 || dow === 6 || state.holidays.includes(dateKey(d)); }
+// ---- 日本の祝日を自動計算 ----
+const _holidayCache = {};
+function nthMonday(year, month, n) {
+  const d = new Date(year, month - 1, 1);
+  let count = 0;
+  while (true) {
+    if (d.getDay() === 1) { count++; if (count === n) return new Date(d); }
+    d.setDate(d.getDate() + 1);
+  }
+}
+function vernalEquinox(year) { return Math.floor(20.8431 + 0.242194 * (year - 1980) - Math.floor((year - 1980) / 4)); }
+function autumnalEquinox(year) { return Math.floor(23.2488 + 0.242194 * (year - 1980) - Math.floor((year - 1980) / 4)); }
+function getJapanHolidays(year) {
+  if (_holidayCache[year]) return _holidayCache[year];
+  const list = [];
+  const add = (m, d, name) => list.push({ date: new Date(year, m - 1, d), name });
+  add(1, 1, "元日");
+  list.push({ date: nthMonday(year, 1, 2), name: "成人の日" });
+  add(2, 11, "建国記念の日");
+  add(2, 23, "天皇誕生日");
+  add(3, vernalEquinox(year), "春分の日");
+  add(4, 29, "昭和の日");
+  add(5, 3, "憲法記念日");
+  add(5, 4, "みどりの日");
+  add(5, 5, "こどもの日");
+  list.push({ date: nthMonday(year, 7, 3), name: "海の日" });
+  add(8, 11, "山の日");
+  list.push({ date: nthMonday(year, 9, 3), name: "敬老の日" });
+  add(9, autumnalEquinox(year), "秋分の日");
+  list.push({ date: nthMonday(year, 10, 2), name: "スポーツの日" });
+  add(11, 3, "文化の日");
+  add(11, 23, "勤労感謝の日");
+  const byKey = {};
+  for (const h of list) byKey[dateKey(h.date)] = h.name;
+  for (const h of [...list]) {
+    if (h.date.getDay() === 0) {
+      let sub = new Date(h.date);
+      do { sub.setDate(sub.getDate() + 1); } while (byKey[dateKey(sub)]);
+      byKey[dateKey(sub)] = "振替休日";
+    }
+  }
+  const sortedKeys = Object.keys(byKey).sort();
+  for (const k of sortedKeys) {
+    const d = new Date(k + "T00:00:00");
+    const next = new Date(d); next.setDate(next.getDate() + 2);
+    const between = new Date(d); between.setDate(between.getDate() + 1);
+    if (between.getDay() !== 0 && !byKey[dateKey(between)] && byKey[dateKey(next)]) {
+      byKey[dateKey(between)] = "国民の休日";
+    }
+  }
+  _holidayCache[year] = byKey;
+  return byKey;
+}
+function isPublicHoliday(d) { return !!getJapanHolidays(d.getFullYear())[dateKey(d)]; }
+
+function isWeekendType(d) { const dow = d.getDay(); return dow === 0 || dow === 6 || isPublicHoliday(d) || state.holidays.includes(dateKey(d)); }
 function slotsForDate(d) {
   const override = state.dateOverrides[dateKey(d)];
   if (override && override.length) return override;
@@ -273,9 +334,20 @@ async function loadMonth() {
   render();
 }
 
+async function resetLateCounts() {
+  if (!confirm("これまでの遅刻回数をリセットします。今日より前の遅刻は集計されなくなります。よろしいですか？")) return;
+  const today = dateKey(new Date());
+  state.saving = true; render();
+  await apiSet("lateCountResetAt", today);
+  state.saving = false;
+  flash("遅刻回数をリセットしました");
+  loadLateSummary();
+}
+
 async function loadLateSummary() {
   state.lateSummaryLoading = true; render();
-  const slotsCfg = await apiGet("slotsConfig");
+  const [slotsCfg, resetAt] = await Promise.all([apiGet("slotsConfig"), apiGet("lateCountResetAt")]);
+  state.lateCountResetAt = resetAt || null;
   const weekdaySlots = (slotsCfg && slotsCfg.weekday && slotsCfg.weekday.length) ? slotsCfg.weekday : DEFAULT_WEEKDAY_SLOTS;
   const weekendSlots = (slotsCfg && slotsCfg.weekend && slotsCfg.weekend.length) ? slotsCfg.weekend : DEFAULT_WEEKEND_SLOTS;
 
@@ -287,7 +359,7 @@ async function loadLateSummary() {
     const parts = k.split(":");
     if (parts.length < 3) return null;
     return { key: k, dStr: parts[1], name: parts.slice(2).join(":"), mKey: parts[1].slice(0, 7), records: punchValues[k] };
-  }).filter((p) => p && p.mKey >= cutoffKey);
+  }).filter((p) => p && p.mKey >= cutoffKey && (!resetAt || p.dStr >= resetAt));
 
   const months = [...new Set(parsed.map((p) => p.mKey))];
   const monthCache = {};
@@ -302,7 +374,7 @@ async function loadLateSummary() {
     if (override && override.length) return override;
     const d = new Date(p.dStr + "T00:00:00");
     const dow = d.getDay();
-    const weekend = dow === 0 || dow === 6 || holidays.includes(p.dStr);
+    const weekend = dow === 0 || dow === 6 || isPublicHoliday(d) || holidays.includes(p.dStr);
     if (slotsSnapshot) {
       const snapSlots = weekend ? slotsSnapshot.weekend : slotsSnapshot.weekday;
       if (snapSlots && snapSlots.length) return snapSlots;
@@ -399,12 +471,23 @@ async function saveStaffAccount() {
   const wageInput = Number(document.getElementById("staffWageField").value) || 0;
   if (!nameInput) { flash("名前を入力してください"); return; }
 
+  const nowMKey = monthKey(new Date());
   const existingIdx = state.staffDirectory.findIndex((s) => s.name === (state.isNewStaff ? nameInput : state.selectedName));
   let newDirectory;
   if (existingIdx === -1) {
-    newDirectory = [...state.staffDirectory, { name: nameInput, password: pwInput, wage: wageInput }];
+    newDirectory = [...state.staffDirectory, { name: nameInput, password: pwInput, wage: wageInput, wageHistory: [{ wage: wageInput, from: nowMKey }] }];
   } else {
-    newDirectory = state.staffDirectory.map((s, i) => (i === existingIdx ? { name: nameInput, password: pwInput, wage: wageInput } : s));
+    newDirectory = state.staffDirectory.map((s, i) => {
+      if (i !== existingIdx) return s;
+      let history = Array.isArray(s.wageHistory) ? [...s.wageHistory] : [];
+      if (!history.length) history = [{ wage: s.wage, from: nowMKey }];
+      if (wageInput !== s.wage) {
+        const idx = history.findIndex((h) => h.from === nowMKey);
+        if (idx !== -1) history[idx] = { wage: wageInput, from: nowMKey };
+        else history.push({ wage: wageInput, from: nowMKey });
+      }
+      return { name: nameInput, password: pwInput, wage: wageInput, wageHistory: history };
+    });
   }
   state.saving = true; render();
   await apiSet("staffList", newDirectory);
@@ -598,7 +681,7 @@ function renderCompareTab() {
     const late = (state.lateSummary && state.lateSummary[s.name]) || { month: 0, q: 0, half: 0, attMonth: 0, attQ: 0, attHalf: 0 };
     rows += `<tr>
       <td>${esc(s.name)}</td>
-      <td class="num">${fmtYen(s.wage)}</td>
+      <td class="num">${fmtYen(wageForMonth(s, monthKey(state.cursor)))}</td>
       <td class="num">${stats.submissionCount}枠</td>
       <td class="num">${stats.scheduledHours.toFixed(1)}h</td>
       <td class="num">${stats.actualHours.toFixed(1)}h</td>
@@ -620,6 +703,10 @@ function renderCompareTab() {
       </table>
     </div>
     ${state.lateSummaryLoading ? `<p class="note">遅刻回数を集計中…</p>` : ""}
+    <div style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <button class="remove-btn" onclick="resetLateCounts()">🔄 遅刻回数をリセット</button>
+      ${state.lateCountResetAt ? `<span class="note" style="margin:0">${state.lateCountResetAt}以降の遅刻のみ集計しています</span>` : ""}
+    </div>
   </div>`;
 }
 
